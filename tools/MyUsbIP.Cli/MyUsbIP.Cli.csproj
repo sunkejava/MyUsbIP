@@ -10,4 +10,7 @@
     <ProjectReference Include="../../src/MyUsbIP.Platform/MyUsbIP.Platform.csproj" />
     <ProjectReference Include="../../src/MyUsbIP.Runtime/MyUsbIP.Runtime.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="clientsettings.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>
