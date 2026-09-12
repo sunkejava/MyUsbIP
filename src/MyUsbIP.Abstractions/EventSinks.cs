@@ -26,7 +26,29 @@ public sealed class JsonLinesUsbIpEventSink : IUsbIpEventSink, IAsyncDisposable
 
     public async ValueTask WriteAsync(UsbIpEvent evt, CancellationToken cancellationToken = default)
     {
-        var json = JsonSerializer.Serialize(evt, jsonOptions);
+        // 不直接序列化 Exception。Exception 内部包含 MethodBase 等复杂成员，
+        // 在 NativeAOT/裁剪或部分运行时下可能导致整个错误事件无法落盘。
+        var payload = new
+        {
+            evt.Timestamp,
+            evt.EventName,
+            evt.Level,
+            evt.TraceId,
+            evt.BusId,
+            evt.RemoteHost,
+            evt.Message,
+            evt.Properties,
+            Exception = evt.Exception is null ? null : new
+            {
+                Type = evt.Exception.GetType().FullName,
+                evt.Exception.Message,
+                evt.Exception.StackTrace,
+                evt.Exception.HResult,
+                InnerType = evt.Exception.InnerException?.GetType().FullName,
+                InnerMessage = evt.Exception.InnerException?.Message,
+            },
+        };
+        var json = JsonSerializer.Serialize(payload, jsonOptions);
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
