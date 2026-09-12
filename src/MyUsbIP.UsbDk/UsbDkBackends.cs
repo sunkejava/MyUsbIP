@@ -108,6 +108,7 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
             var set = manager.GetDescriptorSet(busId);
             var d = set.DeviceDescriptor;
             var c = set.ConfigurationDescriptor;
+            var interfaces = ParseInterfaces(c);
             return new DescriptorMetadata(
                 d.Length >= 18 ? ReadUInt16LittleEndian(d, 2) : (ushort)0,
                 d.Length >= 18 ? ReadUInt16LittleEndian(d, 12) : (ushort)0,
@@ -116,12 +117,48 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
                 d.Length >= 18 ? d[6] : (byte)0,
                 d.Length >= 18 ? d[17] : (byte)1,
                 c.Length >= 6 ? c[5] : (byte)1,
-                c.Length >= 5 ? c[4] : (byte)0);
+                c.Length >= 5 ? c[4] : (byte)interfaces.Count,
+                interfaces);
         }
         catch
         {
             return default;
         }
+    }
+
+    private static IReadOnlyList<UsbIpInterfaceInfo> ParseInterfaces(byte[] configuration)
+    {
+        if (configuration.Length < 9) return Array.Empty<UsbIpInterfaceInfo>();
+
+        // 一个接口可能包含多个 Alternate Setting。USB/IP DEVLIST 只需要每个 interface 的一条
+        // class/subclass/protocol，因此优先保留 AlternateSetting=0，按 InterfaceNumber 排序输出。
+        var byNumber = new SortedDictionary<byte, UsbIpInterfaceInfo>();
+        var offset = 0;
+        while (offset + 2 <= configuration.Length)
+        {
+            var length = configuration[offset];
+            var type = configuration[offset + 1];
+            if (length < 2 || offset + length > configuration.Length) break;
+
+            if (type == 4 && length >= 9)
+            {
+                var interfaceNumber = configuration[offset + 2];
+                var alternateSetting = configuration[offset + 3];
+                var info = new UsbIpInterfaceInfo
+                {
+                    Class = configuration[offset + 5],
+                    SubClass = configuration[offset + 6],
+                    Protocol = configuration[offset + 7],
+                };
+
+                if (alternateSetting == 0 || !byNumber.ContainsKey(interfaceNumber))
+                    byNumber[interfaceNumber] = info;
+            }
+
+            offset += length;
+        }
+
+        return byNumber.Values.ToArray();
     }
 
     private static ushort ReadUInt16LittleEndian(byte[] data, int offset)
@@ -139,6 +176,10 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
             _ = uint.TryParse(parts[1], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out deviceNumber);
         }
 
+        var interfaceCount = descriptor.InterfaceCount;
+        if (interfaceCount == 0 && descriptor.Interfaces.Count > 0)
+            interfaceCount = checked((byte)Math.Min(byte.MaxValue, descriptor.Interfaces.Count));
+
         return device with
         {
             Path = device.InstanceId ?? device.BusId,
@@ -153,7 +194,8 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
             DeviceProtocol = descriptor.DeviceProtocol,
             ConfigurationCount = descriptor.ConfigurationCount == 0 ? (byte)1 : descriptor.ConfigurationCount,
             ConfigurationValue = descriptor.ConfigurationValue == 0 ? (byte)1 : descriptor.ConfigurationValue,
-            InterfaceCount = descriptor.InterfaceCount,
+            InterfaceCount = interfaceCount,
+            Interfaces = descriptor.Interfaces,
         };
     }
 
@@ -165,7 +207,11 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
         byte DeviceProtocol,
         byte ConfigurationCount,
         byte ConfigurationValue,
-        byte InterfaceCount);
+        byte InterfaceCount,
+        IReadOnlyList<UsbIpInterfaceInfo> Interfaces)
+    {
+        public IReadOnlyList<UsbIpInterfaceInfo> Interfaces { get; init; } = Interfaces ?? Array.Empty<UsbIpInterfaceInfo>();
+    }
 
     /// <summary>
     /// UsbDk Speed：1=Low、2=Full、3=High、4=Super；
