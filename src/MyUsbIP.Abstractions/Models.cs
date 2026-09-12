@@ -1,5 +1,13 @@
 namespace MyUsbIP.Abstractions;
 
+/// <summary>USB/IP DEVLIST 中单个接口的 class/subclass/protocol 信息。</summary>
+public sealed record UsbIpInterfaceInfo
+{
+    public byte Class { get; init; }
+    public byte SubClass { get; init; }
+    public byte Protocol { get; init; }
+}
+
 /// <summary>
 /// USB/IP 远程设备信息。
 /// 该模型刻意不暴露任何具体平台驱动类型，保证 Windows/Linux 使用同一套业务代码。
@@ -50,6 +58,12 @@ public sealed record UsbIpDeviceInfo
     public byte ConfigurationValue { get; init; } = 1;
     public byte ConfigurationCount { get; init; } = 1;
     public byte InterfaceCount { get; init; }
+
+    /// <summary>
+    /// 当前配置下各 USB interface 的真实 class/subclass/protocol。
+    /// 标准 USB/IP DEVLIST 会在 usb_device 后逐条发送这些记录。
+    /// </summary>
+    public IReadOnlyList<UsbIpInterfaceInfo> Interfaces { get; init; } = Array.Empty<UsbIpInterfaceInfo>();
 
     public string VidPid => $"{VendorId:X4}:{ProductId:X4}";
 }
