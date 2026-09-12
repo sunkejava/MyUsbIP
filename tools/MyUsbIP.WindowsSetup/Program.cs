@@ -11,7 +11,6 @@ if (!OperatingSystem.IsWindows())
 }
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
-var baseDir = AppContext.BaseDirectory;
 var exeName = Path.GetFileNameWithoutExtension(Environment.ProcessPath ?? string.Empty);
 var role = exeName.Contains("Server", StringComparison.OrdinalIgnoreCase) ? "server"
     : exeName.Contains("Client", StringComparison.OrdinalIgnoreCase) ? "client"
@@ -23,6 +22,7 @@ if (string.IsNullOrEmpty(role))
     role = Console.ReadKey(true).KeyChar == '1' ? "server" : "client";
 }
 
+var baseDir = EmbeddedPayload.PrepareWorkingDirectory(AppContext.BaseDirectory, role);
 var logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "MyUsbIP", "InstallerLogs");
 Directory.CreateDirectory(logDir);
 var logPath = Path.Combine(logDir, $"setup-{role}-{DateTime.Now:yyyyMMdd-HHmmss}.log");
@@ -38,7 +38,7 @@ void Write(string text)
 try
 {
     Write($"MyUsbIP {role} 安装开始");
-    Write($"安装包目录: {baseDir}");
+    Write($"安装工作目录: {baseDir}");
 
     var manifestPath = Path.Combine(baseDir, "config", "dependencies.windows.json");
     if (!File.Exists(manifestPath)) throw new InvalidOperationException($"缺少依赖清单: {manifestPath}");
