@@ -52,7 +52,8 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
         return devices.Select(x => DecorateWireMetadata(
             x,
             activeSessions.ContainsKey(x.BusId),
-            speeds.TryGetValue(x.BusId, out var speed) ? speed : x.Speed)).ToArray();
+            speeds.TryGetValue(x.BusId, out var speed) ? speed : x.Speed,
+            TryReadDescriptorMetadata(x.BusId))).ToArray();
     }
 
     public async Task<UsbIpDeviceInfo?> FindAsync(string busId, CancellationToken cancellationToken = default)
@@ -69,7 +70,6 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
         {
             // UsbDk 对部分 USB 串口设备（包括部分 CH340 类设备）执行 StopRedirect 后，
             // 再次 StartRedirect 可能失败或长时间阻塞。因此 Redirect 句柄作为服务端设备捕获生命周期保留。
-            // 首次 IMPORT 只执行 StartRedirect；后续会话复用上一次 EndSession 已 Reset 的句柄。
             await manager.ShareAsync(busId, cancellationToken).ConfigureAwait(false);
         }
         catch
@@ -81,8 +81,6 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
 
     public async Task EndSessionAsync(string busId, CancellationToken cancellationToken = default)
     {
-        // 先无条件释放 USB/IP 会话所有权。
-        // 即使 UsbDk ResetDevice 自身异常/阻塞，也不能让 BUSID 永久处于 Busy 状态。
         activeSessions.TryRemove(busId, out _);
         await manager.ResetAsync(busId, cancellationToken).ConfigureAwait(false);
     }
@@ -103,7 +101,34 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
         return Task.FromResult(manager.GetDescriptorSet(busId));
     }
 
-    private static UsbIpDeviceInfo DecorateWireMetadata(UsbIpDeviceInfo device, bool attached, uint speed)
+    private DescriptorMetadata TryReadDescriptorMetadata(string busId)
+    {
+        try
+        {
+            var set = manager.GetDescriptorSet(busId);
+            var d = set.DeviceDescriptor;
+            var c = set.ConfigurationDescriptor;
+            return new DescriptorMetadata(
+                d.Length >= 18 ? ReadUInt16LittleEndian(d, 2) : (ushort)0,
+                d.Length >= 18 ? ReadUInt16LittleEndian(d, 12) : (ushort)0,
+                d.Length >= 18 ? d[4] : (byte)0,
+                d.Length >= 18 ? d[5] : (byte)0,
+                d.Length >= 18 ? d[6] : (byte)0,
+                d.Length >= 18 ? d[17] : (byte)1,
+                c.Length >= 6 ? c[5] : (byte)1,
+                c.Length >= 5 ? c[4] : (byte)0);
+        }
+        catch
+        {
+            return default;
+        }
+    }
+
+    private static ushort ReadUInt16LittleEndian(byte[] data, int offset)
+        => (ushort)(data[offset] | (data[offset + 1] << 8));
+
+    private static UsbIpDeviceInfo DecorateWireMetadata(UsbIpDeviceInfo device, bool attached, uint speed,
+        DescriptorMetadata descriptor)
     {
         uint busNumber = 0;
         uint deviceNumber = 0;
@@ -121,8 +146,26 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
             DeviceNumber = deviceNumber,
             Speed = speed,
             State = attached ? UsbIpDeviceState.Attached : device.State,
+            UsbVersion = descriptor.UsbVersion,
+            DeviceVersion = descriptor.DeviceVersion,
+            DeviceClass = descriptor.DeviceClass,
+            DeviceSubClass = descriptor.DeviceSubClass,
+            DeviceProtocol = descriptor.DeviceProtocol,
+            ConfigurationCount = descriptor.ConfigurationCount == 0 ? (byte)1 : descriptor.ConfigurationCount,
+            ConfigurationValue = descriptor.ConfigurationValue == 0 ? (byte)1 : descriptor.ConfigurationValue,
+            InterfaceCount = descriptor.InterfaceCount,
         };
     }
+
+    private readonly record struct DescriptorMetadata(
+        ushort UsbVersion,
+        ushort DeviceVersion,
+        byte DeviceClass,
+        byte DeviceSubClass,
+        byte DeviceProtocol,
+        byte ConfigurationCount,
+        byte ConfigurationValue,
+        byte InterfaceCount);
 
     /// <summary>
     /// UsbDk Speed：1=Low、2=Full、3=High、4=Super；
