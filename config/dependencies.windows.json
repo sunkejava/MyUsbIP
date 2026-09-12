@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "cacheDirectory": "dependencies/cache",
+  "packages": [
+    {
+      "id": "usbdk-x64",
+      "role": "server",
+      "enabled": true,
+      "version": "1.0.22",
+      "fileName": "UsbDk_1.0.22_x64.msi",
+      "sourcePage": "https://github.com/daynix/UsbDk",
+      "downloadUrl": "",
+      "sha256": "",
+      "requiredFilesAfterInstall": [
+        "C:\\Program Files\\UsbDk Runtime Library\\UsbDkHelper.dll"
+      ],
+      "notes": "生产环境必须填入经过人工确认的官方下载地址与 SHA256；不要在现场环境使用 latest 动态地址。"
+    },
+    {
+      "id": "usbip-win-vhci-x64",
+      "role": "client",
+      "enabled": true,
+      "version": "pinned-by-project",
+      "fileName": "usbip-win-vhci-x64.zip",
+      "sourcePage": "https://github.com/cezanne/usbip-win",
+      "downloadUrl": "",
+      "sha256": "",
+      "extractTo": "dependencies/runtime/usbip-win",
+      "requiredFilesAfterExtract": [
+        "usbip.exe"
+      ],
+      "notes": "根据选定分支/Release 固定一套 WDM 或 UDE VHCI 文件。若使用测试签名驱动，客户端需要测试证书、TESTSIGNING 和重启。"
+    }
+  ]
+}
