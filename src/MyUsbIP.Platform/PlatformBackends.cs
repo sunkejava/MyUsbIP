@@ -18,7 +18,13 @@ internal sealed class UsbIpProcessRunner(IUsbIpEventSink sink, TimeSpan timeout)
     {
         using var activity = UsbIpDiagnostics.StartActivity(operation, busId, host);
         var started = Stopwatch.GetTimestamp();
-        await sink.WriteAsync(new(DateTimeOffset.Now, "process.start", "Information", Activity.Current?.TraceId.ToString(), busId, host, $"执行: {fileName} {arguments}"), cancellationToken);
+        await sink.WriteAsync(new(DateTimeOffset.Now, "process.start", "Information", Activity.Current?.TraceId.ToString(), busId, host,
+            $"执行: {fileName} {arguments}", new Dictionary<string, object?>
+            {
+                ["fileName"] = fileName,
+                ["arguments"] = arguments,
+                ["operation"] = operation,
+            }), cancellationToken);
 
         using var timeoutCts = new CancellationTokenSource(timeout);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
@@ -36,25 +42,47 @@ internal sealed class UsbIpProcessRunner(IUsbIpEventSink sink, TimeSpan timeout)
             EnableRaisingEvents = true,
         };
 
+        ProcessResult? completedResult = null;
         try
         {
             if (!process.Start()) throw new InvalidOperationException($"无法启动进程 {fileName}。 ");
             var stdoutTask = process.StandardOutput.ReadToEndAsync(linked.Token);
             var stderrTask = process.StandardError.ReadToEndAsync(linked.Token);
             await process.WaitForExitAsync(linked.Token).ConfigureAwait(false);
-            var result = new ProcessResult(process.ExitCode, await stdoutTask, await stderrTask);
-            if (result.ExitCode != 0)
+            completedResult = new ProcessResult(process.ExitCode, await stdoutTask, await stderrTask);
+
+            await sink.WriteAsync(new(DateTimeOffset.Now, "process.result",
+                completedResult.ExitCode == 0 ? "Information" : "Warning",
+                Activity.Current?.TraceId.ToString(), busId, host,
+                $"{operation} ExitCode={completedResult.ExitCode}", new Dictionary<string, object?>
+                {
+                    ["operation"] = operation,
+                    ["exitCode"] = completedResult.ExitCode,
+                    ["stdout"] = completedResult.StandardOutput,
+                    ["stderr"] = completedResult.StandardError,
+                }), CancellationToken.None);
+
+            if (completedResult.ExitCode != 0)
             {
                 UsbIpDiagnostics.Failures.Add(1, new KeyValuePair<string, object?>("operation", operation));
-                var error = string.IsNullOrWhiteSpace(result.StandardError) ? result.StandardOutput : result.StandardError;
-                throw new InvalidOperationException($"{fileName} 返回 ExitCode={result.ExitCode}: {error.Trim()}");
+                var error = string.IsNullOrWhiteSpace(completedResult.StandardError)
+                    ? completedResult.StandardOutput
+                    : completedResult.StandardError;
+                throw new InvalidOperationException($"{fileName} 返回 ExitCode={completedResult.ExitCode}: {error.Trim()}");
             }
-            return result;
+            return completedResult;
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
         {
             TryKill(process);
             UsbIpDiagnostics.Failures.Add(1, new KeyValuePair<string, object?>("operation", operation));
+            await sink.WriteAsync(new(DateTimeOffset.Now, "process.timeout", "Error", Activity.Current?.TraceId.ToString(),
+                busId, host, $"执行 {fileName} 超过 {timeout.TotalSeconds:0.#} 秒，已终止进程。",
+                new Dictionary<string, object?>
+                {
+                    ["operation"] = operation,
+                    ["timeoutSeconds"] = timeout.TotalSeconds,
+                }), CancellationToken.None);
             throw new TimeoutException($"执行 {fileName} 超过 {timeout.TotalSeconds:0.#} 秒，已终止进程。 ");
         }
         finally
@@ -62,7 +90,13 @@ internal sealed class UsbIpProcessRunner(IUsbIpEventSink sink, TimeSpan timeout)
             var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
             UsbIpDiagnostics.OperationDurationMs.Record(elapsed, new KeyValuePair<string, object?>("operation", operation));
             UsbIpDiagnostics.Operations.Add(1, new KeyValuePair<string, object?>("operation", operation));
-            await sink.WriteAsync(new(DateTimeOffset.Now, "process.end", "Information", Activity.Current?.TraceId.ToString(), busId, host, $"{operation} 完成，耗时 {elapsed:0.0}ms"), CancellationToken.None);
+            await sink.WriteAsync(new(DateTimeOffset.Now, "process.end", "Information", Activity.Current?.TraceId.ToString(), busId, host,
+                $"{operation} 完成，耗时 {elapsed:0.0}ms", new Dictionary<string, object?>
+                {
+                    ["operation"] = operation,
+                    ["elapsedMs"] = elapsed,
+                    ["exitCode"] = completedResult?.ExitCode,
+                }), CancellationToken.None);
         }
     }
 
