@@ -77,6 +77,14 @@ foreach ($pkg in $packages) {
         if ($p.ExitCode -notin @(0,3010)) { throw "MSI 安装失败，ExitCode=$($p.ExitCode)，日志: $log" }
         if ($p.ExitCode -eq 3010) { Write-Warning '安装完成，但系统要求重启。' }
     }
+
+    if ($Install -and $pkg.installType -eq 'exe') {
+        Write-Step "静默安装 $($pkg.id)"
+        $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/TYPE=compact', '/CLOSEAPPLICATIONS')
+        $p = Start-Process $target -ArgumentList $arguments -Wait -PassThru
+        if ($p.ExitCode -notin @(0,3010)) { throw "EXE 安装失败，ExitCode=$($p.ExitCode)" }
+        if ($p.ExitCode -eq 3010) { Write-Warning '安装完成，但系统要求重启。' }
+    }
 }
 
 if ($PrepareHash -and $FreezeHash) {
