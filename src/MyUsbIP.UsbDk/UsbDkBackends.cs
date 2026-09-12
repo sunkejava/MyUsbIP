@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using MyUsbIP.Abstractions;
 using MyUsbIP.NativeServer;
 using MyUsbIP.Protocol;
@@ -37,28 +38,56 @@ public sealed class UsbDkServerBackend : IUsbIpServerBackend
 public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptorProvider
 {
     private readonly UsbDkDeviceManager manager;
+    private readonly ConcurrentDictionary<string, byte> activeSessions = new(StringComparer.OrdinalIgnoreCase);
 
     public UsbDkExportTransport(UsbDkDeviceManager manager)
         => this.manager = manager ?? throw new ArgumentNullException(nameof(manager));
 
-    public Task<IReadOnlyList<UsbIpDeviceInfo>> ListAsync(CancellationToken cancellationToken = default)
-        => manager.ListAsync(cancellationToken);
+    public async Task<IReadOnlyList<UsbIpDeviceInfo>> ListAsync(CancellationToken cancellationToken = default)
+    {
+        var devices = await manager.ListAsync(cancellationToken).ConfigureAwait(false);
+        return devices.Select(x => activeSessions.ContainsKey(x.BusId)
+            ? x with { State = UsbIpDeviceState.Attached }
+            : x).ToArray();
+    }
 
     public async Task<UsbIpDeviceInfo?> FindAsync(string busId, CancellationToken cancellationToken = default)
-        => (await manager.ListAsync(cancellationToken).ConfigureAwait(false))
+        => (await ListAsync(cancellationToken).ConfigureAwait(false))
             .FirstOrDefault(x => string.Equals(x.BusId, busId, StringComparison.OrdinalIgnoreCase));
 
-    public Task BeginSessionAsync(string busId, CancellationToken cancellationToken = default)
-        => manager.ShareAsync(busId, cancellationToken);
+    public async Task BeginSessionAsync(string busId, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!activeSessions.TryAdd(busId, 0))
+            throw new InvalidOperationException($"设备 {busId} 已被其他 USB/IP 会话占用。 ");
+
+        try
+        {
+            await manager.ShareAsync(busId, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            activeSessions.TryRemove(busId, out _);
+            throw;
+        }
+    }
 
     public Task EndSessionAsync(string busId, CancellationToken cancellationToken = default)
     {
-        // Share 生命周期由管理层控制。TCP 会话断开时不自动释放设备，方便自动重连。
+        cancellationToken.ThrowIfCancellationRequested();
+        activeSessions.TryRemove(busId, out _);
+
+        // 保持 UsbDk Redirect，便于客户端断线后快速重连；这里只释放网络会话独占锁。
+        // 管理层执行 Unshare 时才真正 UsbDk_StopRedirect。
         return Task.CompletedTask;
     }
 
     public Task<UsbIpSubmitCompletion> SubmitAsync(string busId, UsbIpSubmitRequest request, CancellationToken cancellationToken = default)
-        => manager.SubmitAsync(busId, request, cancellationToken);
+    {
+        if (!activeSessions.ContainsKey(busId))
+            throw new InvalidOperationException($"设备 {busId} 当前没有活动 USB/IP 会话。 ");
+        return manager.SubmitAsync(busId, request, cancellationToken);
+    }
 
     public Task CancelAsync(string busId, uint sequence, CancellationToken cancellationToken = default)
         => manager.CancelAsync(busId, sequence, cancellationToken);
