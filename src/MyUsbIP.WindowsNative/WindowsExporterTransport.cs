@@ -8,7 +8,7 @@ namespace MyUsbIP.WindowsNative;
 /// <summary>
 /// 标准 USB/IP 服务与 MyUsbIP.Exporter.sys 之间的桥接层。
 /// </summary>
-public sealed class WindowsExporterTransport : IUsbIpExportTransport
+public sealed class WindowsExporterTransport : IUsbIpExportTransport, IUsbDescriptorProvider
 {
     private readonly WindowsNativeServerBackend backend;
     private readonly string devicePath;
@@ -32,6 +32,17 @@ public sealed class WindowsExporterTransport : IUsbIpExportTransport
     public Task EndSessionAsync(string busId, CancellationToken cancellationToken = default)
         => Task.CompletedTask;
 
+    public Task<UsbDescriptorSet> GetDescriptorSetAsync(string busId, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var device = new KernelDeviceClient(devicePath);
+        var output = device.Ioctl(
+            DriverControlProtocol.IoctlExporterGetDescriptors,
+            DriverControlProtocol.BuildBusIdRequest(busId),
+            UsbDescriptorControlProtocol.MaxDescriptorBlobLength + 64);
+        return Task.FromResult(ParseDescriptorSet(output));
+    }
+
     public Task CancelAsync(string busId, uint sequence, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -51,6 +62,41 @@ public sealed class WindowsExporterTransport : IUsbIpExportTransport
         var outputSize = Math.Max(64, Math.Max(0, request.TransferBufferLength) + 64);
         var output = device.Ioctl(DriverControlProtocol.IoctlExporterSubmitUrb, input, outputSize);
         return Task.FromResult(ParseCompletion(request, output));
+    }
+
+    private static UsbDescriptorSet ParseDescriptorSet(ReadOnlySpan<byte> data)
+    {
+        if (data.Length < 20) throw new InvalidDataException("Exporter 描述符响应长度不足。 ");
+        var version = BinaryPrimitives.ReadUInt32LittleEndian(data[..4]);
+        if (version != DriverControlProtocol.ApiVersion) throw new InvalidDataException("Exporter 描述符 ABI 版本不匹配。 ");
+
+        var deviceLength = ReadLength(4);
+        var configLength = ReadLength(8);
+        var bosLength = ReadLength(12);
+        var stringsLength = ReadLength(16);
+        var total = checked(deviceLength + configLength + bosLength + stringsLength);
+        if (total > data.Length - 20) throw new InvalidDataException("Exporter 描述符数据被截断。 ");
+
+        var offset = 20;
+        var deviceDescriptor = Take(deviceLength);
+        var configDescriptor = Take(configLength);
+        var bosDescriptor = Take(bosLength);
+        var strings = Take(stringsLength);
+        return new UsbDescriptorSet(deviceDescriptor, configDescriptor, bosDescriptor, strings);
+
+        int ReadLength(int offsetValue)
+        {
+            var value = BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(offsetValue, 4));
+            if (value > UsbDescriptorControlProtocol.MaxDescriptorBlobLength) throw new InvalidDataException("描述符长度超过限制。 ");
+            return checked((int)value);
+        }
+
+        byte[] Take(int length)
+        {
+            var result = data.Slice(offset, length).ToArray();
+            offset += length;
+            return result;
+        }
     }
 
     private static byte[] BuildSubmitRequest(UsbIpSubmitRequest request)
