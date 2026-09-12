@@ -242,7 +242,7 @@ public sealed class UsbDkDeviceManager : IDisposable
 
     private static IReadOnlyList<byte[]> ReadConfigurationDescriptors(UsbDkDeviceInfoNative native)
     {
-        var count = Math.Max(1, native.DeviceDescriptor.NumberConfigurations);
+        var count = Math.Max(1, (int)native.DeviceDescriptor.NumberConfigurations);
         var result = new List<byte[]>(count);
         for (ulong index = 0; index < (ulong)count; index++)
         {
