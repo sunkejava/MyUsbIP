@@ -20,8 +20,17 @@ public interface IUsbIpExportTransport
 }
 
 /// <summary>
+/// 可选的描述符提供器。自研 Windows UdeCx 客户端在创建虚拟 USB 设备之前需要预取真实设备描述符。
+/// </summary>
+public interface IUsbDescriptorProvider
+{
+    Task<UsbDescriptorSet> GetDescriptorSetAsync(string busId, CancellationToken cancellationToken = default);
+}
+
+/// <summary>
 /// MyUsbIP 自研 USB/IP TCP 服务。
-/// 不依赖 usbipd-win；直接实现 USB/IP DEVLIST / IMPORT / SUBMIT 数据路径。
+/// 不依赖 usbipd-win；直接实现 USB/IP DEVLIST / IMPORT / SUBMIT 数据路径，
+/// 并额外提供 UdeCx 所需的描述符预取扩展。
 /// </summary>
 public sealed class UsbIpNativeServer : IAsyncDisposable
 {
@@ -91,6 +100,17 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
             {
                 var devices = await transport.ListAsync(cancellationToken).ConfigureAwait(false);
                 await UsbIpWire.WriteDevListReplyAsync(stream, devices, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            if (op.Code == UsbDescriptorControlProtocol.OpReqDescriptors)
+            {
+                if (transport is not IUsbDescriptorProvider descriptorProvider)
+                    throw new NotSupportedException("当前 Exporter 未实现 USB 描述符查询。 ");
+
+                var busId = await UsbIpCodec.ReadBusIdAsync(stream, cancellationToken).ConfigureAwait(false);
+                var descriptors = await descriptorProvider.GetDescriptorSetAsync(busId, cancellationToken).ConfigureAwait(false);
+                await UsbDescriptorControlProtocol.WriteReplyAsync(stream, descriptors, cancellationToken).ConfigureAwait(false);
                 return;
             }
 
