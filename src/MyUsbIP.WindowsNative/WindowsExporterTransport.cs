@@ -70,33 +70,34 @@ public sealed class WindowsExporterTransport : IUsbIpExportTransport, IUsbDescri
         var version = BinaryPrimitives.ReadUInt32LittleEndian(data[..4]);
         if (version != DriverControlProtocol.ApiVersion) throw new InvalidDataException("Exporter 描述符 ABI 版本不匹配。 ");
 
-        var deviceLength = ReadLength(4);
-        var configLength = ReadLength(8);
-        var bosLength = ReadLength(12);
-        var stringsLength = ReadLength(16);
+        var deviceRaw = BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(4, 4));
+        var configRaw = BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(8, 4));
+        var bosRaw = BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(12, 4));
+        var stringsRaw = BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(16, 4));
+
+        if (deviceRaw > UsbDescriptorControlProtocol.MaxDescriptorBlobLength ||
+            configRaw > UsbDescriptorControlProtocol.MaxDescriptorBlobLength ||
+            bosRaw > UsbDescriptorControlProtocol.MaxDescriptorBlobLength ||
+            stringsRaw > UsbDescriptorControlProtocol.MaxDescriptorBlobLength)
+            throw new InvalidDataException("描述符长度超过限制。 ");
+
+        var deviceLength = checked((int)deviceRaw);
+        var configLength = checked((int)configRaw);
+        var bosLength = checked((int)bosRaw);
+        var stringsLength = checked((int)stringsRaw);
         var total = checked(deviceLength + configLength + bosLength + stringsLength);
         if (total > data.Length - 20) throw new InvalidDataException("Exporter 描述符数据被截断。 ");
 
         var offset = 20;
-        var deviceDescriptor = Take(deviceLength);
-        var configDescriptor = Take(configLength);
-        var bosDescriptor = Take(bosLength);
-        var strings = Take(stringsLength);
+        var deviceDescriptor = data.Slice(offset, deviceLength).ToArray();
+        offset += deviceLength;
+        var configDescriptor = data.Slice(offset, configLength).ToArray();
+        offset += configLength;
+        var bosDescriptor = data.Slice(offset, bosLength).ToArray();
+        offset += bosLength;
+        var strings = data.Slice(offset, stringsLength).ToArray();
+
         return new UsbDescriptorSet(deviceDescriptor, configDescriptor, bosDescriptor, strings);
-
-        int ReadLength(int offsetValue)
-        {
-            var value = BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(offsetValue, 4));
-            if (value > UsbDescriptorControlProtocol.MaxDescriptorBlobLength) throw new InvalidDataException("描述符长度超过限制。 ");
-            return checked((int)value);
-        }
-
-        byte[] Take(int length)
-        {
-            var result = data.Slice(offset, length).ToArray();
-            offset += length;
-            return result;
-        }
     }
 
     private static byte[] BuildSubmitRequest(UsbIpSubmitRequest request)
