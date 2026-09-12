@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.1.6
+
+针对 usbip-win2 0.9.8.0 最新正式版进行完整兼容性复核，并修复严格 DEVLIST 解析、命令输出编码、接口元数据和客户端参数适配问题。
+
+- 确认截至 2026-09-13，`vadimgrn/usbip-win2` 最新正式 Release 为 `0.9.8.0`；客户端依赖继续固定官方 `USBip-0.9.8.0-x64.exe`，SHA256=`81f426741f7ee2ed991febe24a22daca8400b6ae2f171054e3fb404897e15d39`。
+- 服务端继续实现标准 USB/IP protocol v1.1.1（0x0111），无需安装 usbip-win2；usbip-win2 仅作为 Windows 客户端 UDE/VHCI。
+- 修复 DEVLIST 标准协议：每个 `usb_device` 后按 `bNumInterfaces` 写入 4 字节 `usb_interface` 记录，解决 usbip-win2 `list -r` 因继续读取 interface 遇到 EOF 而 ExitCode=1 的问题。
+- 服务端从真实 Configuration Descriptor 提取逐接口 Class/SubClass/Protocol，并写入 DEVLIST，不再仅用设备级 class 作为占位。
+- MyUsbIP 设备模型增加逐接口元数据，设备状态扩展协议与 CLI 同步展示接口信息。
+- 外部 `usbip.exe` stdout/stderr 强制按 UTF-8 解码，修复中文 Windows 下 `操作成功完成` 被显示为 `鎿嶄綔鎴愬姛瀹屾垚` 等乱码。
+- Windows 客户端适配 usbip-win2 0.9.8.0 的 `--receive-mode=zero-copy|low-latency`；新增 `ReceiveMode` 配置，默认 `zero-copy`。
+- 自定义 USB/IP TCP 端口改用 usbip-win2 明确的全局参数 `--tcp-port`，避免和 attach 子命令的 `-t/--terse` 短参数产生歧义。
+- `AttachTimeoutSeconds` 与 `CommandTimeoutSeconds` 改为真正独立 Runner：attach 默认 120 秒，list/port/detach 默认 15 秒。
+- Attach 继续使用 `--once`，兼容 usbip-win2 0.9.8.0 UDE 驱动确认成功后返回端口；同时兼容上游当前输出中的 `succesfully/successfully attached to port N` 两种拼写。
+- usbip-win2 0.9.8.0 Release 中已知的 `stop_attach_attempts` 指定 location 问题不影响 MyUsbIP，因为当前链路不使用 `attach --stop`。
+- 增加 DEVLIST interface 真实字节与设备状态逐接口元数据回归测试；Windows/Linux Build、Smoke tests、Windows Setup 与 Bundle 构建通过后发布。
+
 ## 1.1.5
 
 针对 Windows 客户端 Attach 实际成功但旧 `usbip.exe` 进程不退出、`usbip port` 显示 `unknown host / ???`、设备占用方不可见、日志中文被转义，以及客户端依赖升级问题进行修复与增强。
