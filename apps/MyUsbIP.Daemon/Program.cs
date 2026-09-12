@@ -21,20 +21,31 @@ var config = JsonSerializer.Deserialize<DaemonConfig>(await File.ReadAllTextAsyn
     PropertyNameCaseInsensitive = true,
 }) ?? new DaemonConfig();
 
-var logDirectory = Path.IsPathRooted(config.LogDirectory)
-    ? config.LogDirectory
-    : Path.Combine(AppContext.BaseDirectory, config.LogDirectory);
+var configuredDirectory = Environment.ExpandEnvironmentVariables(config.Logging.Directory);
+var logDirectory = Path.IsPathRooted(configuredDirectory)
+    ? configuredDirectory
+    : Path.Combine(AppContext.BaseDirectory, configuredDirectory);
 Directory.CreateDirectory(logDirectory);
+LogFileMaintenance.Cleanup(logDirectory, "myusbip-server-*.jsonl", config.Logging.RetentionDays);
 
-await using var fileSink = new JsonLinesUsbIpEventSink(Path.Combine(logDirectory, $"myusbip-{DateTime.Now:yyyyMMdd}.jsonl"));
+var logPath = Path.Combine(logDirectory, $"myusbip-server-{DateTime.Now:yyyyMMdd}.jsonl");
+await using JsonLinesUsbIpEventSink? fileSink = config.Logging.Enabled ? new JsonLinesUsbIpEventSink(logPath) : null;
 var memorySink = new MemoryUsbIpEventSink(2000);
-var sink = new CompositeUsbIpEventSink(fileSink, memorySink);
+IUsbIpEventSink sink = fileSink is null
+    ? memorySink
+    : new CompositeUsbIpEventSink(fileSink, memorySink);
 
 IUsbIpServerBackend serverBackend;
 IUsbIpClientBackend clientBackend;
 UsbIpNativeServer? nativeServer = null;
 WindowsNativeClientBackend? nativeClientBackend = null;
 UsbDkDeviceManager? usbDkManager = null;
+
+var nativeLogging = new UsbIpNativeServerLoggingOptions
+{
+    LogSuccessfulUrbs = config.Logging.LogSuccessfulUrbs,
+    LogDeviceListRequests = config.Logging.LogDeviceListRequests,
+};
 
 if (string.Equals(config.BackendMode, "UsbDkUsbipWin", StringComparison.OrdinalIgnoreCase))
 {
@@ -60,7 +71,8 @@ if (string.Equals(config.BackendMode, "UsbDkUsbipWin", StringComparison.OrdinalI
             new UsbDkExportTransport(usbDkManager),
             address,
             config.NativeServer.Port,
-            sink);
+            sink,
+            nativeLogging);
     }
 }
 else if (string.Equals(config.BackendMode, "NativeWindows", StringComparison.OrdinalIgnoreCase))
@@ -84,7 +96,8 @@ else if (string.Equals(config.BackendMode, "NativeWindows", StringComparison.Ord
             new WindowsExporterTransport(),
             address,
             config.NativeServer.Port,
-            sink);
+            sink,
+            nativeLogging);
     }
 }
 else
@@ -108,10 +121,20 @@ Console.CancelKeyPress += (_, e) =>
     shutdown.Cancel();
 };
 
-Console.WriteLine("MyUsbIP Daemon v1.0");
+Console.WriteLine("MyUsbIP Daemon");
 Console.WriteLine($"Backend: {config.BackendMode}");
 Console.WriteLine($"配置: {configPath}");
-Console.WriteLine($"日志: {logDirectory}");
+Console.WriteLine($"日志: {(config.Logging.Enabled ? logPath : "已禁用")}");
+
+await sink.WriteAsync(new UsbIpEvent(DateTimeOffset.Now, "daemon.started", "Information", null, null, null,
+    "MyUsbIP Daemon 已启动", new Dictionary<string, object?>
+    {
+        ["backendMode"] = config.BackendMode,
+        ["configPath"] = configPath,
+        ["logPath"] = config.Logging.Enabled ? logPath : null,
+        ["retentionDays"] = config.Logging.RetentionDays,
+        ["logSuccessfulUrbs"] = config.Logging.LogSuccessfulUrbs,
+    }));
 
 try
 {
@@ -153,6 +176,8 @@ try
         }
         catch (Exception ex)
         {
+            await sink.WriteAsync(new UsbIpEvent(DateTimeOffset.Now, "managed.connection.initial.failed", "Warning", null,
+                item.BusId, item.Host, ex.Message, Exception: ex));
             Console.Error.WriteLine($"初始连接失败 {item.Host}/{item.BusId}: {ex.Message}，后台恢复循环会继续尝试。 ");
         }
     }
@@ -183,6 +208,8 @@ finally
     if (nativeServer is not null) await nativeServer.DisposeAsync();
     if (nativeClientBackend is not null) await nativeClientBackend.DisposeAsync();
     usbDkManager?.Dispose();
+    await sink.WriteAsync(new UsbIpEvent(DateTimeOffset.Now, "daemon.stopped", "Information", null, null, null,
+        "MyUsbIP Daemon 已停止"));
 }
 
 Console.WriteLine("MyUsbIP Daemon 已停止。 ");
@@ -197,19 +224,26 @@ static ushort? ParseHex(string? value)
 
 internal sealed record DaemonConfig
 {
-    /// <summary>
-    /// UsbDkUsbipWin=服务端 UsbDk + MyUsbIP TCP Server，客户端 usbip-win VHCI（推荐）；
-    /// NativeWindows=实验性自研驱动；Legacy=usbipd-win + usbip-win。
-    /// </summary>
     public string BackendMode { get; init; } = "UsbDkUsbipWin";
     public string UsbipWinPath { get; init; } = "usbip.exe";
-    public string LogDirectory { get; init; } = "logs";
     public int CommandTimeoutSeconds { get; init; } = 15;
     public int MonitorIntervalSeconds { get; init; } = 2;
+    public DaemonLoggingConfig Logging { get; init; } = new();
     public NativeServerConfig NativeServer { get; init; } = new();
     public List<AutoShareRuleConfig> AutoShareRules { get; init; } = [];
     public List<ManagedConnectionConfig> ManagedConnections { get; init; } = [];
     public ReconnectConfig Reconnect { get; init; } = new();
+}
+
+internal sealed record DaemonLoggingConfig
+{
+    public bool Enabled { get; init; } = true;
+    public string Directory { get; init; } = OperatingSystem.IsWindows()
+        ? "%ProgramData%\\MyUsbIP\\ServerLogs"
+        : "logs";
+    public int RetentionDays { get; init; } = 30;
+    public bool LogSuccessfulUrbs { get; init; }
+    public bool LogDeviceListRequests { get; init; } = true;
 }
 
 internal sealed record NativeServerConfig
