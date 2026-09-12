@@ -18,8 +18,23 @@ public sealed class UsbDkDeviceManager : IDisposable
     {
         EnsureWindows();
         cancellationToken.ThrowIfCancellationRequested();
-        var snapshots = EnumerateNativeDevices();
-        IReadOnlyList<UsbIpDeviceInfo> result = snapshots.Select(ToDeviceInfo).ToArray();
+
+        var devices = new Dictionary<string, UsbIpDeviceInfo>(StringComparer.OrdinalIgnoreCase);
+        foreach (var snapshot in EnumerateNativeDevices())
+        {
+            var info = ToDeviceInfo(snapshot);
+            devices[info.BusId] = info;
+        }
+
+        // UsbDk_StartRedirect 后，部分设备可能暂时/持续不再出现在 UsbDk_GetDevicesList 中。
+        // 不能因此让已经被服务端捕获的 CH340/UKey 从 DEVLIST 消失，否则 detach 后无法再次 IMPORT。
+        foreach (var pair in redirected)
+        {
+            var info = ToDeviceInfo(pair.Value.Native) with { State = UsbIpDeviceState.Shared };
+            devices[pair.Key] = info;
+        }
+
+        IReadOnlyList<UsbIpDeviceInfo> result = devices.Values.ToArray();
         return Task.FromResult(result);
     }
 
@@ -39,6 +54,25 @@ public sealed class UsbDkDeviceManager : IDisposable
 
         var device = new RedirectedDevice(native, handle, ReadConfigurationDescriptors(native));
         if (!redirected.TryAdd(busId, device)) UsbDkNative.UsbDk_StopRedirect(handle);
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// 重置已重定向设备但保持 Redirect 句柄。
+    /// 用于 USB/IP detach 后清理设备/端点状态，同时避免部分 USB 串口设备 StopRedirect 后无法二次 StartRedirect。
+    /// </summary>
+    public Task ResetAsync(string busId, CancellationToken cancellationToken = default)
+    {
+        EnsureWindows();
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!redirected.TryGetValue(busId, out var device)) return Task.CompletedTask;
+
+        foreach (var key in pendingEndpoints.Keys.Where(x => string.Equals(x.BusId, busId, StringComparison.OrdinalIgnoreCase)).ToArray())
+            pendingEndpoints.TryRemove(key, out _);
+
+        if (!UsbDkNative.UsbDk_ResetDevice(device.Handle))
+            UsbDkNative.ThrowLastWin32($"UsbDk_ResetDevice({busId}) 失败");
+
         return Task.CompletedTask;
     }
 
@@ -65,7 +99,6 @@ public sealed class UsbDkDeviceManager : IDisposable
         if (!redirected.TryGetValue(busId, out var device)) return Task.CompletedTask;
         if (!pendingEndpoints.TryRemove((busId, sequence), out var endpoint)) return Task.CompletedTask;
 
-        // 不同 USB/IP 会话的 sequence 可能相同，因此必须按 BusId + Sequence 唯一定位。
         UsbDkNative.UsbDk_AbortPipe(device.Handle, endpoint);
         UsbDkNative.UsbDk_ResetPipe(device.Handle, endpoint);
         return Task.CompletedTask;
@@ -73,9 +106,21 @@ public sealed class UsbDkDeviceManager : IDisposable
 
     public UsbDescriptorSet GetDescriptorSet(string busId)
     {
-        var native = FindNativeDevice(busId)
+        UsbDkDeviceInfoNative native;
+        if (redirected.TryGetValue(busId, out var redirectedDevice))
+        {
+            native = redirectedDevice.Native;
+        }
+        else
+        {
+            native = FindNativeDevice(busId)
                      ?? throw new InvalidOperationException($"UsbDk 设备 {busId} 不存在。 ");
-        var configs = ReadConfigurationDescriptors(native);
+        }
+
+        var configs = redirected.TryGetValue(busId, out redirectedDevice)
+            ? redirectedDevice.ConfigurationDescriptors
+            : ReadConfigurationDescriptors(native);
+
         return new UsbDescriptorSet(
             SerializeDeviceDescriptor(native.DeviceDescriptor),
             configs.FirstOrDefault() ?? Array.Empty<byte>(),
@@ -336,11 +381,13 @@ public sealed class UsbDkDeviceManager : IDisposable
         {
             Native = native;
             Handle = handle;
-            EndpointTypes = ParseEndpointTypes(configs);
+            ConfigurationDescriptors = configs.Select(x => x.ToArray()).ToArray();
+            EndpointTypes = ParseEndpointTypes(ConfigurationDescriptors);
         }
 
         public UsbDkDeviceInfoNative Native { get; }
         public nint Handle { get; }
+        public IReadOnlyList<byte[]> ConfigurationDescriptors { get; }
         public Dictionary<byte, UsbDkTransferType> EndpointTypes { get; }
 
         public void Dispose()
