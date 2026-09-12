@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.1
+
+修复 Windows UsbDk 服务端 Control Transfer 返回长度计算错误。
+
+- UsbDk `BytesTransferred` 对 Control Transfer 表示数据阶段实际长度，不包含 8 字节 Setup Packet。
+- v1.1.0 错误再次减去 8，导致 `GET_DESCRIPTOR(9)` 被上报为 1 字节，客户端出现 `fetch_descriptor: too short response: actual length: 1` 并 Attach 失败。
+- 修复后 Control IN 返回长度直接使用 UsbDk `BytesTransferred`，数据仍从 Setup Packet 后 8 字节位置读取。
+- 该修复主要影响设备 Attach/枚举阶段，客户端 VHCI 无需因该问题变更。
+
 ## 1.1.0
 
 Windows 主链路切换为 **UsbDk 服务端 + MyUsbIP 原生 USB/IP Server + usbip-win VHCI 客户端**，目标是在不自研/自签 Windows 内核驱动的前提下完成可部署、可诊断、可验证的 USB 网络共享方案。
