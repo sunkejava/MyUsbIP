@@ -169,7 +169,7 @@ static void InstallServer(string baseDir, string dependencyPath, Action<string> 
     if (code is not (0 or 3010)) throw new InvalidOperationException($"UsbDk 安装失败，ExitCode={code}，日志={msiLog}");
 
     write("部署服务端程序...");
-    CopyDirectory(payload, installDir, ["appsettings.json"]);
+    CopyDirectory(payload, installDir, new[] { "appsettings.json" });
     Directory.CreateDirectory(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "MyUsbIP", "ServerLogs"));
     var helper = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "UsbDk Runtime Library", "UsbDkHelper.dll");
     if (!File.Exists(helper)) throw new FileNotFoundException("UsbDk 已安装但未找到 UsbDkHelper.dll。", helper);
@@ -205,7 +205,7 @@ static void InstallClient(string baseDir, string dependencyPath, Action<string> 
     if (!Directory.Exists(payload)) throw new DirectoryNotFoundException($"缺少客户端程序目录: {payload}");
 
     write("部署客户端程序...");
-    CopyDirectory(payload, installDir, ["clientsettings.json"]);
+    CopyDirectory(payload, installDir, new[] { "clientsettings.json" });
     Directory.CreateDirectory(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "MyUsbIP", "ClientLogs"));
     var usbipDir = Path.Combine(installDir, "usbip-win");
     if (Directory.Exists(usbipDir)) Directory.Delete(usbipDir, true);
@@ -236,7 +236,7 @@ static void InstallClient(string baseDir, string dependencyPath, Action<string> 
     write("客户端自检通过：usbip.exe 可执行，VHCI 已响应。");
 }
 
-static void CopyDirectory(string source, string destination, IReadOnlySet<string>? preserveExistingRelativeFiles = null)
+static void CopyDirectory(string source, string destination, string[]? preserveExistingRelativeFiles = null)
 {
     Directory.CreateDirectory(destination);
     foreach (var dir in Directory.EnumerateDirectories(source, "*", SearchOption.AllDirectories))
@@ -246,7 +246,7 @@ static void CopyDirectory(string source, string destination, IReadOnlySet<string
         var relative = Path.GetRelativePath(source, file);
         var target = Path.Combine(destination, relative);
         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-        if (preserveExistingRelativeFiles?.Contains(relative) == true && File.Exists(target)) continue;
+        if (preserveExistingRelativeFiles?.Contains(relative, StringComparer.OrdinalIgnoreCase) == true && File.Exists(target)) continue;
         File.Copy(file, target, true);
     }
 }
