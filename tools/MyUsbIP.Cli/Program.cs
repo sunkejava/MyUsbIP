@@ -104,7 +104,7 @@ async Task HandleServerAsync(string[] command)
         case "watch":
             var monitor = new UsbIpDeviceMonitor(server, sink);
             await foreach (var change in monitor.WatchAsync())
-                Console.WriteLine($"{change.OccurredAt:HH:mm:ss} {change.Kind,-7} {change.Device.BusId,-8} {change.Device.VidPid} {change.Device.Product}");
+                Console.WriteLine($"{change.OccurredAt:HH:mm:ss} {change.Kind,-7} {change.Device.BusId,-20} {change.Device.VidPid} {change.Device.Product}");
             break;
         case "diag":
             await PrintReportAsync(await diagnostics.CheckServerAsync());
@@ -157,9 +157,33 @@ async Task HandleClientAsync(string[] command)
 
 static void PrintDevices(IReadOnlyList<UsbIpDeviceInfo> devices)
 {
-    Console.WriteLine($"{ "BUSID",-20} {"VID:PID",-10} {"STATE",-10} PRODUCT");
+    Console.WriteLine($"{"BUSID",-20} {"VID:PID",-10} {"STATE",-10} {"SPEED",-10} {"CONNECTED BY",-20} PRODUCT");
     foreach (var d in devices)
-        Console.WriteLine($"{d.BusId,-20} {d.VidPid,-10} {d.State,-10} {d.Product}");
+    {
+        Console.WriteLine($"{d.BusId,-20} {d.VidPid,-10} {d.State,-10} {FormatSpeed(d.Speed),-10} {(d.ClientAddress ?? "-"),-20} {d.Product}");
+        Console.WriteLine($"  bus/dev={d.BusNumber}/{d.DeviceNumber} usb={FormatBcd(d.UsbVersion)} device={FormatBcd(d.DeviceVersion)} class={d.DeviceClass:X2}/{d.DeviceSubClass:X2}/{d.DeviceProtocol:X2} configs={d.ConfigurationCount} config={d.ConfigurationValue} interfaces={d.InterfaceCount}");
+        if (!string.IsNullOrWhiteSpace(d.InstanceId)) Console.WriteLine($"  instance={d.InstanceId}");
+        if (!string.IsNullOrWhiteSpace(d.SerialNumber)) Console.WriteLine($"  serial={d.SerialNumber}");
+        if (d.ConnectedAt is not null || !string.IsNullOrWhiteSpace(d.SessionId))
+            Console.WriteLine($"  connectedAt={d.ConnectedAt:yyyy-MM-dd HH:mm:ss zzz} session={d.SessionId ?? "-"}");
+    }
+}
+
+static string FormatSpeed(uint speed) => speed switch
+{
+    1 => "Low",
+    2 => "Full",
+    3 => "High",
+    4 => "Wireless",
+    5 => "Super",
+    6 => "Super+",
+    _ => "Unknown",
+};
+
+static string FormatBcd(ushort value)
+{
+    if (value == 0) return "-";
+    return $"{(value >> 8):X}.{((value >> 4) & 0xF):X}{(value & 0xF):X}";
 }
 
 static Task PrintReportAsync(UsbIpHealthReport report)
