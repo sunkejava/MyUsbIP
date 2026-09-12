@@ -6,6 +6,7 @@ using MyUsbIP.NativeServer;
 using MyUsbIP.Platform;
 using MyUsbIP.Runtime;
 using MyUsbIP.Server;
+using MyUsbIP.UsbDk;
 using MyUsbIP.WindowsNative;
 
 var configPath = args.Length > 0 ? Path.GetFullPath(args[0]) : Path.Combine(AppContext.BaseDirectory, "appsettings.json");
@@ -33,8 +34,36 @@ IUsbIpServerBackend serverBackend;
 IUsbIpClientBackend clientBackend;
 UsbIpNativeServer? nativeServer = null;
 WindowsNativeClientBackend? nativeClientBackend = null;
+UsbDkDeviceManager? usbDkManager = null;
 
-if (string.Equals(config.BackendMode, "NativeWindows", StringComparison.OrdinalIgnoreCase))
+if (string.Equals(config.BackendMode, "UsbDkUsbipWin", StringComparison.OrdinalIgnoreCase))
+{
+    if (!OperatingSystem.IsWindows())
+    {
+        Console.Error.WriteLine("BackendMode=UsbDkUsbipWin 仅支持 Windows。 ");
+        return 3;
+    }
+
+    usbDkManager = new UsbDkDeviceManager();
+    serverBackend = new UsbDkServerBackend(usbDkManager);
+    clientBackend = new WindowsUsbIpBackend(
+        usbipPath: config.UsbipWinPath,
+        eventSink: sink,
+        commandTimeout: TimeSpan.FromSeconds(Math.Max(1, config.CommandTimeoutSeconds)));
+
+    if (config.NativeServer.Enabled)
+    {
+        var address = string.IsNullOrWhiteSpace(config.NativeServer.ListenAddress)
+            ? IPAddress.Any
+            : IPAddress.Parse(config.NativeServer.ListenAddress);
+        nativeServer = new UsbIpNativeServer(
+            new UsbDkExportTransport(usbDkManager),
+            address,
+            config.NativeServer.Port,
+            sink);
+    }
+}
+else if (string.Equals(config.BackendMode, "NativeWindows", StringComparison.OrdinalIgnoreCase))
 {
     if (!OperatingSystem.IsWindows())
     {
@@ -94,7 +123,7 @@ try
     var tasks = new List<Task>();
     if (nativeServer is not null)
     {
-        Console.WriteLine($"Native USB/IP Server: {config.NativeServer.ListenAddress}:{config.NativeServer.Port}");
+        Console.WriteLine($"MyUsbIP USB/IP Server: {config.NativeServer.ListenAddress}:{config.NativeServer.Port}");
         tasks.Add(nativeServer.RunAsync(shutdown.Token));
     }
 
@@ -153,6 +182,7 @@ finally
 {
     if (nativeServer is not null) await nativeServer.DisposeAsync();
     if (nativeClientBackend is not null) await nativeClientBackend.DisposeAsync();
+    usbDkManager?.Dispose();
 }
 
 Console.WriteLine("MyUsbIP Daemon 已停止。 ");
@@ -167,8 +197,12 @@ static ushort? ParseHex(string? value)
 
 internal sealed record DaemonConfig
 {
-    /// <summary>Legacy=usbipd-win/usbip；NativeWindows=MyUsbIP.Exporter + MyUsbIP.Vhci(UdeCx)。</summary>
-    public string BackendMode { get; init; } = "Legacy";
+    /// <summary>
+    /// UsbDkUsbipWin=服务端 UsbDk + MyUsbIP TCP Server，客户端 usbip-win VHCI（推荐）；
+    /// NativeWindows=实验性自研驱动；Legacy=usbipd-win + usbip-win。
+    /// </summary>
+    public string BackendMode { get; init; } = "UsbDkUsbipWin";
+    public string UsbipWinPath { get; init; } = "usbip.exe";
     public string LogDirectory { get; init; } = "logs";
     public int CommandTimeoutSeconds { get; init; } = 15;
     public int MonitorIntervalSeconds { get; init; } = 2;
@@ -180,7 +214,7 @@ internal sealed record DaemonConfig
 
 internal sealed record NativeServerConfig
 {
-    public bool Enabled { get; init; }
+    public bool Enabled { get; init; } = true;
     public string ListenAddress { get; init; } = "0.0.0.0";
     public int Port { get; init; } = 3240;
 }
