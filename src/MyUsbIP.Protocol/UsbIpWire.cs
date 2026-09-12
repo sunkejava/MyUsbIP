@@ -55,6 +55,7 @@ public sealed record UsbIpUnlinkRequest(
 public static class UsbIpWire
 {
     public const int DeviceWireSize = 312;
+    public const int InterfaceWireSize = 4;
     public const int BasicHeaderSize = 20;
     public const int SubmitBodySize = 28;
     public const int UnlinkBodySize = 28;
@@ -82,6 +83,32 @@ public static class UsbIpWire
         UsbIpDiagnostics.BytesSent.Add(buffer.Length);
     }
 
+    /// <summary>
+    /// 写入标准 USB/IP usb_interface 记录。
+    /// DEVLIST 中每个 usb_device 后必须紧跟 bNumInterfaces 个 4 字节 interface 记录；
+    /// 否则严格客户端（例如 usbip-win2）会继续读 interface 时遇到 EOF，导致 list 返回失败。
+    /// 当前公共设备模型尚未保存每个 interface 的独立 class/subclass/protocol，
+    /// 因此优先使用设备级 class 信息作为兼容回退；后续可扩展为真实逐接口元数据。
+    /// </summary>
+    private static async ValueTask WriteInterfacesAsync(Stream stream, UsbIpDeviceInfo device,
+        CancellationToken cancellationToken = default)
+    {
+        if (device.InterfaceCount == 0) return;
+
+        var buffer = new byte[checked(device.InterfaceCount * InterfaceWireSize)];
+        for (var i = 0; i < device.InterfaceCount; i++)
+        {
+            var offset = i * InterfaceWireSize;
+            buffer[offset] = device.DeviceClass;
+            buffer[offset + 1] = device.DeviceSubClass;
+            buffer[offset + 2] = device.DeviceProtocol;
+            buffer[offset + 3] = 0;
+        }
+
+        await stream.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
+        UsbIpDiagnostics.BytesSent.Add(buffer.Length);
+    }
+
     public static async ValueTask WriteDevListReplyAsync(Stream stream, IReadOnlyList<UsbIpDeviceInfo> devices, CancellationToken cancellationToken = default)
     {
         await UsbIpCodec.WriteOperationHeaderAsync(stream,
@@ -94,7 +121,10 @@ public static class UsbIpWire
         UsbIpDiagnostics.BytesSent.Add(4);
 
         foreach (var device in devices)
+        {
             await WriteDeviceAsync(stream, device, cancellationToken).ConfigureAwait(false);
+            await WriteInterfacesAsync(stream, device, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     public static async ValueTask WriteImportReplyAsync(Stream stream, UsbIpDeviceInfo device, CancellationToken cancellationToken = default)
