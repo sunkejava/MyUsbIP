@@ -166,11 +166,24 @@ static void CopyDirectory(string source, string destination)
     }
 }
 
+static ProcessStartInfo CreateStart(string fileName, bool capture, params string[] args)
+{
+    var start = new ProcessStartInfo(fileName)
+    {
+        UseShellExecute = false,
+        CreateNoWindow = true,
+        RedirectStandardOutput = capture,
+        RedirectStandardError = capture,
+    };
+    if (Path.IsPathRooted(fileName) && File.Exists(fileName))
+        start.WorkingDirectory = Path.GetDirectoryName(fileName)!;
+    foreach (var arg in args) start.ArgumentList.Add(arg);
+    return start;
+}
+
 static int RunArgs(string fileName, params string[] args)
 {
-    var start = new ProcessStartInfo(fileName) { UseShellExecute = false, CreateNoWindow = true };
-    foreach (var arg in args) start.ArgumentList.Add(arg);
-    using var process = Process.Start(start);
+    using var process = Process.Start(CreateStart(fileName, false, args));
     if (process is null) return -1;
     process.WaitForExit();
     return process.ExitCode;
@@ -178,15 +191,7 @@ static int RunArgs(string fileName, params string[] args)
 
 static (int ExitCode, string Output) RunCaptureArgs(string fileName, params string[] args)
 {
-    var start = new ProcessStartInfo(fileName)
-    {
-        UseShellExecute = false,
-        CreateNoWindow = true,
-        RedirectStandardOutput = true,
-        RedirectStandardError = true,
-    };
-    foreach (var arg in args) start.ArgumentList.Add(arg);
-    using var process = Process.Start(start);
+    using var process = Process.Start(CreateStart(fileName, true, args));
     if (process is null) return (-1, "进程启动失败");
     var output = process.StandardOutput.ReadToEnd() + Environment.NewLine + process.StandardError.ReadToEnd();
     process.WaitForExit();
