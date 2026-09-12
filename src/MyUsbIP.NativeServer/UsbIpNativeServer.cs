@@ -84,6 +84,7 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
     {
         await using var stream = client.GetStream();
         string? importedBusId = null;
+        var sessionStarted = false;
         try
         {
             var op = await UsbIpCodec.ReadOperationHeaderAsync(stream, cancellationToken).ConfigureAwait(false);
@@ -111,9 +112,26 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
                 throw new InvalidDataException($"不支持的 USB/IP OP=0x{op.Code:X4}。 ");
 
             importedBusId = await UsbIpCodec.ReadBusIdAsync(stream, cancellationToken).ConfigureAwait(false);
-            var device = await transport.FindAsync(importedBusId, cancellationToken).ConfigureAwait(false)
-                         ?? throw new InvalidOperationException($"设备 {importedBusId} 不存在。 ");
-            await transport.BeginSessionAsync(importedBusId, cancellationToken).ConfigureAwait(false);
+            var device = await transport.FindAsync(importedBusId, cancellationToken).ConfigureAwait(false);
+            if (device is null)
+            {
+                await UsbIpWire.WriteImportFailureAsync(stream, 1, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            try
+            {
+                await transport.BeginSessionAsync(importedBusId, cancellationToken).ConfigureAwait(false);
+                sessionStarted = true;
+            }
+            catch (InvalidOperationException ex)
+            {
+                await UsbIpWire.WriteImportFailureAsync(stream, 1, cancellationToken).ConfigureAwait(false);
+                await eventSink.WriteAsync(new(DateTimeOffset.Now, "native.import.rejected", "Warning", null,
+                    importedBusId, client.Client.RemoteEndPoint?.ToString(), ex.Message), CancellationToken.None);
+                return;
+            }
+
             await UsbIpWire.WriteImportReplyAsync(stream, device, cancellationToken).ConfigureAwait(false);
             await PumpUrbAsync(stream, importedBusId, cancellationToken).ConfigureAwait(false);
         }
@@ -129,7 +147,7 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
         }
         finally
         {
-            if (importedBusId is not null)
+            if (sessionStarted && importedBusId is not null)
             {
                 try { await transport.EndSessionAsync(importedBusId, CancellationToken.None).ConfigureAwait(false); } catch { }
             }
@@ -173,7 +191,6 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                // USB/IP 使用负 errno 风格 status。单个 URB 失败不应该直接破坏整个 TCP 会话。
                 try
                 {
                     var failure = new UsbIpSubmitCompletion(
