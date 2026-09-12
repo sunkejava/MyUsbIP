@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>myusbip</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/MyUsbIP.Abstractions/MyUsbIP.Abstractions.csproj" />
+    <ProjectReference Include="../../src/MyUsbIP.Server/MyUsbIP.Server.csproj" />
+    <ProjectReference Include="../../src/MyUsbIP.Client/MyUsbIP.Client.csproj" />
+    <ProjectReference Include="../../src/MyUsbIP.Platform/MyUsbIP.Platform.csproj" />
+    <ProjectReference Include="../../src/MyUsbIP.Runtime/MyUsbIP.Runtime.csproj" />
+  </ItemGroup>
+</Project>
