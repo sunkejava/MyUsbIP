@@ -2,5 +2,6 @@
   <ItemGroup>
     <ProjectReference Include="../MyUsbIP.Abstractions/MyUsbIP.Abstractions.csproj" />
     <ProjectReference Include="../MyUsbIP.Protocol/MyUsbIP.Protocol.csproj" />
+    <ProjectReference Include="../MyUsbIP.NativeServer/MyUsbIP.NativeServer.csproj" />
   </ItemGroup>
 </Project>
