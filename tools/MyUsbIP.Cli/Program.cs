@@ -30,10 +30,11 @@ IUsbIpEventSink sink = fileSink is null
     : new CompositeUsbIpEventSink(fileSink, memorySink);
 
 var timeout = TimeSpan.FromSeconds(Math.Max(1, config.CommandTimeoutSeconds));
+var attachTimeout = TimeSpan.FromSeconds(Math.Max(config.CommandTimeoutSeconds, config.AttachTimeoutSeconds));
 var backendObject = UsbIpBackendFactory.CreateDefault(sink, timeout);
 var serverBackend = (IUsbIpServerBackend)backendObject;
 IUsbIpClientBackend clientBackend = OperatingSystem.IsWindows()
-    ? new UsbipWinVhciClientBackend(config.UsbipWinPath, sink, timeout)
+    ? new UsbipWinVhciClientBackend(config.UsbipWinPath, sink, attachTimeout)
     : (IUsbIpClientBackend)backendObject;
 
 var server = new MyUsbIpServer(serverBackend, sink);
@@ -54,6 +55,8 @@ try
             ["arguments"] = args,
             ["configPath"] = configPath,
             ["logPath"] = config.Logging.Enabled ? logPath : null,
+            ["commandTimeoutSeconds"] = config.CommandTimeoutSeconds,
+            ["attachTimeoutSeconds"] = config.AttachTimeoutSeconds,
         }));
 
     switch (args[0].ToLowerInvariant())
@@ -122,7 +125,10 @@ async Task HandleClientAsync(string[] command)
         case "attach" when command.Length >= 3:
         {
             await sink.WriteAsync(new UsbIpEvent(DateTimeOffset.Now, "client.attach.request", "Information", null,
-                command[2], command[1], "请求远程挂载设备"));
+                command[2], command[1], "请求远程挂载设备", new Dictionary<string, object?>
+                {
+                    ["attachTimeoutSeconds"] = config.AttachTimeoutSeconds,
+                }));
             var result = await client.AttachAsync(command[1], command[2]);
             await sink.WriteAsync(new UsbIpEvent(DateTimeOffset.Now, "client.attach.result",
                 result.Success ? "Information" : "Warning", null, command[2], command[1], result.Message,
@@ -186,6 +192,7 @@ internal sealed record ClientCliConfig
 {
     public string UsbipWinPath { get; init; } = "usbip.exe";
     public int CommandTimeoutSeconds { get; init; } = 15;
+    public int AttachTimeoutSeconds { get; init; } = 120;
     public ClientLoggingConfig Logging { get; init; } = new();
 }
 
