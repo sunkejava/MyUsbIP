@@ -2,7 +2,9 @@ name: build
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
+      - 'release/**'
     tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
@@ -63,13 +65,27 @@ jobs:
             artifacts/bundles/checksums.sha256
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v')
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: release-artifacts
+      - name: Resolve release tag
+        id: release_tag
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="$GITHUB_REF_NAME"
+          else
+            TAG="${GITHUB_REF_NAME#release/}"
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: $TAG" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
       - name: Create Linux archive
         run: |
           cd release-artifacts
@@ -82,11 +98,13 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_tag.outputs.tag }}
         run: >-
-          gh release create "${GITHUB_REF_NAME}"
+          gh release create "$RELEASE_TAG"
           MyUsbIP-Server-win-x64.zip
           MyUsbIP-Client-win-x64.zip
           myusbip-linux-x64.zip
           checksums.sha256
+          --target "$GITHUB_SHA"
           --generate-notes
-          --title "MyUsbIP ${GITHUB_REF_NAME}"
+          --title "MyUsbIP $RELEASE_TAG"
