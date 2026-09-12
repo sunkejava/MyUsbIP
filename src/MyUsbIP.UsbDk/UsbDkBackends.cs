@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using MyUsbIP.Abstractions;
 using MyUsbIP.NativeServer;
 using MyUsbIP.Protocol;
@@ -47,7 +48,11 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
     public async Task<IReadOnlyList<UsbIpDeviceInfo>> ListAsync(CancellationToken cancellationToken = default)
     {
         var devices = await manager.ListAsync(cancellationToken).ConfigureAwait(false);
-        return devices.Select(x => DecorateWireMetadata(x, activeSessions.ContainsKey(x.BusId))).ToArray();
+        var speeds = ReadNativeSpeeds();
+        return devices.Select(x => DecorateWireMetadata(
+            x,
+            activeSessions.ContainsKey(x.BusId),
+            speeds.TryGetValue(x.BusId, out var speed) ? speed : x.Speed)).ToArray();
     }
 
     public async Task<UsbIpDeviceInfo?> FindAsync(string busId, CancellationToken cancellationToken = default)
@@ -97,7 +102,7 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
         return Task.FromResult(manager.GetDescriptorSet(busId));
     }
 
-    private static UsbIpDeviceInfo DecorateWireMetadata(UsbIpDeviceInfo device, bool attached)
+    private static UsbIpDeviceInfo DecorateWireMetadata(UsbIpDeviceInfo device, bool attached, uint speed)
     {
         uint busNumber = 0;
         uint deviceNumber = 0;
@@ -113,7 +118,45 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
             Path = device.InstanceId ?? device.BusId,
             BusNumber = busNumber,
             DeviceNumber = deviceNumber,
+            Speed = speed,
             State = attached ? UsbIpDeviceState.Attached : device.State,
         };
+    }
+
+    /// <summary>
+    /// UsbDk Speed：1=Low、2=Full、3=High、4=Super；
+    /// USB/IP 在 3 与 5 之间额外保留了 Wireless=4，因此 Super 需要映射为 5。
+    /// </summary>
+    private static Dictionary<string, uint> ReadNativeSpeeds()
+    {
+        var result = new Dictionary<string, uint>(StringComparer.OrdinalIgnoreCase);
+        if (!OperatingSystem.IsWindows()) return result;
+        if (!UsbDkNative.UsbDk_GetDevicesList(out var basePtr, out var count)) return result;
+
+        try
+        {
+            var size = Marshal.SizeOf<UsbDkDeviceInfoNative>();
+            for (uint i = 0; i < count; i++)
+            {
+                var ptr = basePtr + checked((int)i * size);
+                var native = Marshal.PtrToStructure<UsbDkDeviceInfoNative>(ptr);
+                var busId = $"{unchecked((uint)native.FilterId):X8}-{unchecked((uint)native.Port):X8}";
+                result[busId] = native.Speed switch
+                {
+                    1 => 1,
+                    2 => 2,
+                    3 => 3,
+                    4 => 5,
+                    5 => 6,
+                    _ => 0,
+                };
+            }
+        }
+        finally
+        {
+            if (basePtr != 0) UsbDkNative.UsbDk_ReleaseDevicesList(basePtr);
+        }
+
+        return result;
     }
 }
