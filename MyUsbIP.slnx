@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/MyUsbIP.Abstractions/MyUsbIP.Abstractions.csproj" />
+    <Project Path="src/MyUsbIP.Protocol/MyUsbIP.Protocol.csproj" />
+    <Project Path="src/MyUsbIP.Server/MyUsbIP.Server.csproj" />
+    <Project Path="src/MyUsbIP.Client/MyUsbIP.Client.csproj" />
+    <Project Path="src/MyUsbIP.Platform/MyUsbIP.Platform.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/MyUsbIP.Server.Sample/MyUsbIP.Server.Sample.csproj" />
+    <Project Path="samples/MyUsbIP.Client.Sample/MyUsbIP.Client.Sample.csproj" />
+  </Folder>
+</Solution>
