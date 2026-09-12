@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../MyUsbIP.Abstractions/MyUsbIP.Abstractions.csproj" />
+    <ProjectReference Include="../MyUsbIP.Server/MyUsbIP.Server.csproj" />
+    <ProjectReference Include="../MyUsbIP.Client/MyUsbIP.Client.csproj" />
+  </ItemGroup>
+</Project>
