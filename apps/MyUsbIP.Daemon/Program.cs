@@ -46,7 +46,7 @@ if (string.Equals(config.BackendMode, "UsbDkUsbipWin", StringComparison.OrdinalI
 
     usbDkManager = new UsbDkDeviceManager();
     serverBackend = new UsbDkServerBackend(usbDkManager);
-    clientBackend = new WindowsUsbIpBackend(
+    clientBackend = new UsbipWinVhciClientBackend(
         usbipPath: config.UsbipWinPath,
         eventSink: sink,
         commandTimeout: TimeSpan.FromSeconds(Math.Max(1, config.CommandTimeoutSeconds)));
