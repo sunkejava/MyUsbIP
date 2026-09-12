@@ -1,0 +1,39 @@
+[Version]
+Signature="$WINDOWS NT$"
+Class=System
+ClassGuid={4D36E97D-E325-11CE-BFC1-08002BE10318}
+Provider=%ProviderName%
+DriverVer=09/12/2026,1.0.0.0
+CatalogFile=MyUsbIP.Vhci.cat
+PnpLockdown=1
+
+[DestinationDirs]
+DefaultDestDir = 12
+
+[Manufacturer]
+%ManufacturerName%=MyUsbIP,NTamd64.10.0
+
+[MyUsbIP.NTamd64.10.0]
+%MyUsbIPVhci.DeviceDesc%=MyUsbIPVhci_Install,Root\MyUsbIPVhci
+
+[MyUsbIPVhci_Install.NT]
+CopyFiles=DriverCopyFiles
+
+[DriverCopyFiles]
+MyUsbIP.Vhci.sys
+
+[MyUsbIPVhci_Install.NT.Services]
+AddService=MyUsbIPVhci,0x00000002,MyUsbIPVhci_Service
+
+[MyUsbIPVhci_Service]
+DisplayName=%MyUsbIPVhci.SvcDesc%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%12%\MyUsbIP.Vhci.sys
+
+[Strings]
+ProviderName="MyUsbIP"
+ManufacturerName="MyUsbIP"
+MyUsbIPVhci.DeviceDesc="MyUsbIP Virtual USB Host Controller"
+MyUsbIPVhci.SvcDesc="MyUsbIP Virtual USB Host Controller Driver"
