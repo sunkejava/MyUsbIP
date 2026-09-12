@@ -38,10 +38,7 @@ public sealed class UsbDkDeviceManager : IDisposable
             UsbDkNative.ThrowLastWin32($"UsbDk_StartRedirect({busId}) 失败");
 
         var device = new RedirectedDevice(native, handle, ReadConfigurationDescriptors(native));
-        if (!redirected.TryAdd(busId, device))
-        {
-            UsbDkNative.UsbDk_StopRedirect(handle);
-        }
+        if (!redirected.TryAdd(busId, device)) UsbDkNative.UsbDk_StopRedirect(handle);
         return Task.CompletedTask;
     }
 
@@ -69,8 +66,8 @@ public sealed class UsbDkDeviceManager : IDisposable
         if (!pendingEndpoints.TryRemove(sequence, out var pending)) return Task.CompletedTask;
         if (!string.Equals(pending.BusId, busId, StringComparison.OrdinalIgnoreCase)) return Task.CompletedTask;
 
-        // UsbDk 公共 API 没有按单个 OVERLAPPED 暴露取消接口；这里按端点 Abort，
-        // 会同时取消该端点上的待处理请求。随后 ResetPipe 恢复端点状态。
+        // UsbDk 公共 Helper API 没有按 Sequence 取消接口，因此按端点 Abort。
+        // 这可能同时取消同一端点上的多个请求，随后 ResetPipe 恢复端点。
         UsbDkNative.UsbDk_AbortPipe(device.Handle, pending.Endpoint);
         UsbDkNative.UsbDk_ResetPipe(device.Handle, pending.Endpoint);
         return Task.CompletedTask;
@@ -99,6 +96,7 @@ public sealed class UsbDkDeviceManager : IDisposable
         var prefixLength = isControl ? 8 : 0;
         var dataLength = Math.Max(0, request.TransferBufferLength);
         var bufferLength = checked(prefixLength + dataLength);
+
         var buffer = Marshal.AllocHGlobal(Math.Max(1, bufferLength));
         var eventHandle = UsbDkNative.CreateEventW(0, false, false, null);
         if (eventHandle == 0)
@@ -108,13 +106,10 @@ public sealed class UsbDkDeviceManager : IDisposable
         }
 
         var overlappedPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NativeOverlappedData>());
+        var requestPtr = Marshal.AllocHGlobal(Marshal.SizeOf<UsbDkTransferRequest>());
         try
         {
-            if (bufferLength > 0)
-            {
-                var zero = new byte[bufferLength];
-                Marshal.Copy(zero, 0, buffer, bufferLength);
-            }
+            if (bufferLength > 0) Marshal.Copy(new byte[bufferLength], 0, buffer, bufferLength);
 
             if (isControl)
             {
@@ -128,21 +123,19 @@ public sealed class UsbDkDeviceManager : IDisposable
                 Marshal.Copy(request.Payload, 0, buffer, Math.Min(request.Payload.Length, dataLength));
             }
 
-            var overlapped = new NativeOverlappedData { EventHandle = eventHandle };
-            Marshal.StructureToPtr(overlapped, overlappedPtr, false);
-
-            var nativeRequest = new UsbDkTransferRequest
+            Marshal.StructureToPtr(new NativeOverlappedData { EventHandle = eventHandle }, overlappedPtr, false);
+            Marshal.StructureToPtr(new UsbDkTransferRequest
             {
                 EndpointAddress = endpoint,
                 Buffer = buffer,
                 BufferLength = checked((ulong)bufferLength),
                 TransferType = (ulong)transferType,
-            };
+            }, requestPtr, false);
 
             pendingEndpoints[request.Sequence] = (busId, endpoint);
             var result = request.Direction != 0
-                ? UsbDkNative.UsbDk_ReadPipe(device.Handle, ref nativeRequest, overlappedPtr)
-                : UsbDkNative.UsbDk_WritePipe(device.Handle, ref nativeRequest, overlappedPtr);
+                ? UsbDkNative.UsbDk_ReadPipe(device.Handle, requestPtr, overlappedPtr)
+                : UsbDkNative.UsbDk_WritePipe(device.Handle, requestPtr, overlappedPtr);
 
             if (result == UsbDkTransferResult.SuccessAsync)
             {
@@ -157,9 +150,11 @@ public sealed class UsbDkDeviceManager : IDisposable
                 throw new IOException($"UsbDk 传输失败，BusId={busId}, EP=0x{endpoint:X2}。 ");
             }
 
+            var nativeRequest = Marshal.PtrToStructure<UsbDkTransferRequest>(requestPtr);
             var transferred = checked((int)Math.Min((ulong)int.MaxValue, nativeRequest.Result.Generic.BytesTransferred));
             var status = nativeRequest.Result.Generic.UsbdStatus == 0 ? 0 : -5;
             var actualLength = isControl ? Math.Max(0, transferred - 8) : transferred;
+
             byte[] payload = Array.Empty<byte>();
             if (request.Direction != 0 && actualLength > 0)
             {
@@ -182,6 +177,7 @@ public sealed class UsbDkDeviceManager : IDisposable
         finally
         {
             pendingEndpoints.TryRemove(request.Sequence, out _);
+            Marshal.FreeHGlobal(requestPtr);
             Marshal.FreeHGlobal(overlappedPtr);
             UsbDkNative.CloseHandle(eventHandle);
             Marshal.FreeHGlobal(buffer);
@@ -192,7 +188,6 @@ public sealed class UsbDkDeviceManager : IDisposable
     {
         if ((endpoint & 0x0F) == 0) return UsbDkTransferType.Control;
         if (device.EndpointTypes.TryGetValue((byte)endpoint, out var type)) return type;
-        // 对绝大多数 UKey/CCID 与串口设备，非 EP0 端点为 Bulk/Interrupt。
         return UsbDkTransferType.Bulk;
     }
 
@@ -210,10 +205,18 @@ public sealed class UsbDkDeviceManager : IDisposable
         };
     }
 
-    private static string GetBusId(UsbDkDeviceInfoNative native) => $"{native.FilterId}-{native.Port}";
+    // USB/IP busid 字段只有 32 字节，使用两个低 32 位十六进制值保证固定且短小。
+    private static string GetBusId(UsbDkDeviceInfoNative native)
+        => $"{unchecked((uint)native.FilterId):X8}-{unchecked((uint)native.Port):X8}";
 
     private static UsbDkDeviceInfoNative? FindNativeDevice(string busId)
-        => EnumerateNativeDevices().FirstOrDefault(x => string.Equals(GetBusId(x), busId, StringComparison.OrdinalIgnoreCase));
+    {
+        foreach (var item in EnumerateNativeDevices())
+        {
+            if (string.Equals(GetBusId(item), busId, StringComparison.OrdinalIgnoreCase)) return item;
+        }
+        return null;
+    }
 
     private static IReadOnlyList<UsbDkDeviceInfoNative> EnumerateNativeDevices()
     {
@@ -224,7 +227,7 @@ public sealed class UsbDkDeviceManager : IDisposable
         {
             var result = new List<UsbDkDeviceInfoNative>(checked((int)count));
             var size = Marshal.SizeOf<UsbDkDeviceInfoNative>();
-            for (var i = 0; i < count; i++)
+            for (uint i = 0; i < count; i++)
             {
                 var ptr = basePtr + checked((int)i * size);
                 result.Add(Marshal.PtrToStructure<UsbDkDeviceInfoNative>(ptr));
@@ -244,8 +247,7 @@ public sealed class UsbDkDeviceManager : IDisposable
         for (ulong index = 0; index < (ulong)count; index++)
         {
             var request = new UsbDkConfigDescriptorRequest { Id = native.Id, Index = index };
-            if (!UsbDkNative.UsbDk_GetConfigurationDescriptor(ref request, out var descriptor, out var length))
-                continue;
+            if (!UsbDkNative.UsbDk_GetConfigurationDescriptor(ref request, out var descriptor, out var length)) continue;
             try
             {
                 if (descriptor == 0 || length == 0) continue;
