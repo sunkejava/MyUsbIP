@@ -26,70 +26,39 @@ Windows Release 采用 **self-contained + single-file** 发布，目标机器无
 
 ### 服务端
 
-下载并解压：
-
-```text
-MyUsbIP-Server-win-x64.zip
-```
-
-然后直接双击：
+下载并解压 `MyUsbIP-Server-win-x64.zip`，然后直接双击：
 
 ```text
 MyUsbIP-Server-Setup.exe
 ```
 
-安装器会自动：
-
-- 请求管理员权限；
-- 校验离线 UsbDk 安装包 SHA256；
-- 安装 UsbDk；
-- 部署 MyUsbIP 服务端；
-- 配置 TCP 3240 防火墙；
-- 创建 SYSTEM 开机启动任务；
-- 启动服务端；
-- 自动检测 UsbDk 与 TCP 3240；
-- 将安装日志写入 `C:\ProgramData\MyUsbIP\InstallerLogs`。
+安装器自动完成管理员提权、UsbDk 校验与安装、服务端部署、防火墙、SYSTEM 开机启动任务、启动和自检。
 
 ### 客户端
 
-下载并解压：
-
-```text
-MyUsbIP-Client-win-x64.zip
-```
-
-然后直接双击：
+下载并解压 `MyUsbIP-Client-win-x64.zip`，然后直接双击：
 
 ```text
 MyUsbIP-Client-Setup.exe
 ```
 
-安装器会自动：
+安装器自动完成管理员提权、usbip-win VHCI 安装、CLI 部署、PATH 配置和 VHCI 自检。
 
-- 请求管理员权限；
-- 校验离线 usbip-win 包 SHA256；
-- 安装 usbip-win VHCI，优先 UDE；
-- 部署 MyUsbIP CLI；
-- 配置 `usbip.exe` 系统 PATH；
-- 自动执行 VHCI 自检。
+**最终用户无需执行任何 PowerShell、CMD 或 BAT 安装/测试脚本。** `scripts/windows` 只保留给项目维护和 CI 使用。
 
-**最终用户无需执行 PowerShell、CMD、BAT 安装或测试脚本。** `scripts/windows` 仅保留给项目维护和 CI 使用。
+安装日志统一写入：
+
+```text
+C:\ProgramData\MyUsbIP\InstallerLogs
+```
 
 ## 运行时说明
 
-Windows 发布使用：
-
-```text
---self-contained true
-PublishSingleFile=true
-IncludeNativeLibrariesForSelfExtract=true
-```
-
-因此 `myusbipd.exe`、`myusbip.exe`、`MyUsbIP-Server-Setup.exe`、`MyUsbIP-Client-Setup.exe` 均不依赖目标机预装 .NET 运行时。
+Windows 发布使用 self-contained 单文件模式，因此 `myusbipd.exe`、`myusbip.exe` 和两个 Setup EXE 均不依赖目标机预装 .NET Runtime。
 
 ## CLI
 
-客户端安装完成后，可使用：
+客户端安装完成后可使用：
 
 ```text
 myusbip client list 192.168.1.100
@@ -97,11 +66,7 @@ myusbip client attach 192.168.1.100 <busid>
 myusbip client detach <port>
 ```
 
-服务端默认监听：
-
-```text
-TCP 3240
-```
+服务端默认监听 TCP 3240。
 
 ## 主要能力
 
