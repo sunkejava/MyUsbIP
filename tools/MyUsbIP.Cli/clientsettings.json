@@ -4,5 +4,6 @@
     "Directory": "%ProgramData%\\MyUsbIP\\ClientLogs",
     "RetentionDays": 30
   },
-  "CommandTimeoutSeconds": 15
+  "CommandTimeoutSeconds": 15,
+  "AttachTimeoutSeconds": 120
 }
