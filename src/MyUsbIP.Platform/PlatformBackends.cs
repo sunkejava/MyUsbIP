@@ -46,7 +46,8 @@ internal sealed class UsbIpProcessRunner(IUsbIpEventSink sink, TimeSpan timeout)
             if (result.ExitCode != 0)
             {
                 UsbIpDiagnostics.Failures.Add(1, new KeyValuePair<string, object?>("operation", operation));
-                throw new InvalidOperationException($"{fileName} 返回 ExitCode={result.ExitCode}: {result.StandardError.Trim()}");
+                var error = string.IsNullOrWhiteSpace(result.StandardError) ? result.StandardOutput : result.StandardError;
+                throw new InvalidOperationException($"{fileName} 返回 ExitCode={result.ExitCode}: {error.Trim()}");
             }
             return result;
         }
@@ -71,6 +72,25 @@ internal sealed class UsbIpProcessRunner(IUsbIpEventSink sink, TimeSpan timeout)
     }
 }
 
+/// <summary>解析 usbip port 输出，取得远端设备对应的本地 VHCI 端口。</summary>
+internal static partial class UsbIpPortParser
+{
+    [GeneratedRegex(@"(?ims)Port\s+(?<port>\d+):.*?usbip://(?<host>[^:/\s]+):(?<tcp>\d+)/(?<bus>[^\s]+)", RegexOptions.CultureInvariant)]
+    private static partial Regex PortRegex();
+
+    public static int? FindPort(string text, string host, int serverPort, string busId)
+    {
+        foreach (Match match in PortRegex().Matches(text))
+        {
+            if (!string.Equals(match.Groups["host"].Value, host, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!string.Equals(match.Groups["bus"].Value, busId, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!int.TryParse(match.Groups["tcp"].Value, out var tcpPort) || tcpPort != serverPort) continue;
+            if (int.TryParse(match.Groups["port"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var localPort)) return localPort;
+        }
+        return null;
+    }
+}
+
 /// <summary>Linux USB/IP 后端，依赖 usbip 工具及内核 usbip_host/vhci_hcd 模块。</summary>
 public sealed class LinuxUsbIpBackend : IUsbIpServerBackend, IUsbIpClientBackend
 {
@@ -91,20 +111,37 @@ public sealed class LinuxUsbIpBackend : IUsbIpServerBackend, IUsbIpClientBackend
 
     public async Task<IReadOnlyList<UsbIpDeviceInfo>> ListRemoteDevicesAsync(string host, int port = 3240, CancellationToken cancellationToken = default)
     {
-        var r = await runner.RunAsync("usbip", $"list -r {Quote(host)}", "client.remote.list", null, host, cancellationToken);
+        var portOption = BuildTcpPortOption(port);
+        var r = await runner.RunAsync("usbip", $"{portOption}list -r {Quote(host)}", "client.remote.list", null, host, cancellationToken);
         return ParseUsbIpList(r.StandardOutput);
     }
 
     public async Task<UsbIpAttachResult> AttachAsync(string host, string busId, int port = 3240, CancellationToken cancellationToken = default)
     {
-        await runner.RunAsync("usbip", $"attach -r {Quote(host)} -b {Quote(busId)}", "client.attach", busId, host, cancellationToken);
-        return new(true, busId, null, "已提交到 Linux vhci_hcd；可通过 usbip port 查看虚拟端口。 ");
+        var portOption = BuildTcpPortOption(port);
+        await runner.RunAsync("usbip", $"{portOption}attach -r {Quote(host)} -b {Quote(busId)}", "client.attach", busId, host, cancellationToken);
+        var localPort = await TryResolveLocalPortAsync(host, busId, port, cancellationToken).ConfigureAwait(false);
+        return new(true, busId, localPort, localPort is null ? "已提交到 Linux vhci_hcd，未能解析本地端口。 " : $"已挂载到 Linux VHCI 端口 {localPort}。 ");
     }
 
-    public Task DetachAsync(int port, CancellationToken cancellationToken = default) => RunNoResult("usbip", $"detach -p {port.ToString(CultureInfo.InvariantCulture)}", "client.detach", null, null, cancellationToken);
+    public Task DetachAsync(int port, CancellationToken cancellationToken = default) => RunNoResult("usbip", $"detach --port={port.ToString(CultureInfo.InvariantCulture)}", "client.detach", null, null, cancellationToken);
+
+    private async Task<int?> TryResolveLocalPortAsync(string host, string busId, int serverPort, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var r = await runner.RunAsync("usbip", "port", "client.port.list", busId, host, cancellationToken);
+            return UsbIpPortParser.FindPort(r.StandardOutput, host, serverPort, busId);
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
     private async Task RunNoResult(string file, string args, string op, string? busId, string? host, CancellationToken ct) => await runner.RunAsync(file, args, op, busId, host, ct);
     private static string Quote(string value) => $"\"{value.Replace("\"", "\\\"")}\"";
+    private static string BuildTcpPortOption(int port) => port == 3240 ? string.Empty : $"--tcp-port {port.ToString(CultureInfo.InvariantCulture)} ";
 
     internal static IReadOnlyList<UsbIpDeviceInfo> ParseUsbIpList(string text)
     {
@@ -156,17 +193,39 @@ public sealed class WindowsUsbIpBackend : IUsbIpServerBackend, IUsbIpClientBacke
 
     public async Task<IReadOnlyList<UsbIpDeviceInfo>> ListRemoteDevicesAsync(string host, int port = 3240, CancellationToken cancellationToken = default)
     {
+        EnsureDefaultPort(port);
         var r = await runner.RunAsync(usbipPath, $"list -r {Quote(host)}", "client.remote.list", null, host, cancellationToken);
         return LinuxUsbIpBackend.ParseUsbIpList(r.StandardOutput);
     }
 
     public async Task<UsbIpAttachResult> AttachAsync(string host, string busId, int port = 3240, CancellationToken cancellationToken = default)
     {
+        EnsureDefaultPort(port);
         await runner.RunAsync(usbipPath, $"attach -r {Quote(host)} -b {Quote(busId)}", "client.attach", busId, host, cancellationToken);
-        return new(true, busId, null, "已提交到 Windows VHCI。 ");
+        var localPort = await TryResolveLocalPortAsync(host, busId, port, cancellationToken).ConfigureAwait(false);
+        return new(true, busId, localPort, localPort is null ? "已提交到 Windows VHCI，未能解析本地端口。 " : $"已挂载到 Windows VHCI 端口 {localPort}。 ");
     }
 
-    public Task DetachAsync(int port, CancellationToken cancellationToken = default) => RunNoResult(usbipPath, $"detach -p {port.ToString(CultureInfo.InvariantCulture)}", "client.detach", null, null, cancellationToken);
+    public Task DetachAsync(int port, CancellationToken cancellationToken = default) => RunNoResult(usbipPath, $"detach --port={port.ToString(CultureInfo.InvariantCulture)}", "client.detach", null, null, cancellationToken);
+
+    private async Task<int?> TryResolveLocalPortAsync(string host, string busId, int serverPort, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var r = await runner.RunAsync(usbipPath, "port", "client.port.list", busId, host, cancellationToken);
+            return UsbIpPortParser.FindPort(r.StandardOutput, host, serverPort, busId);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static void EnsureDefaultPort(int port)
+    {
+        if (port != 3240)
+            throw new NotSupportedException("当前 Windows usbip-win CLI 后端仅保证标准 TCP 3240 端口兼容。需要自定义端口时请实现自定义 IUsbIpClientBackend。 ");
+    }
 
     private async Task RunNoResult(string file, string args, string op, string? busId, string? host, CancellationToken ct) => await runner.RunAsync(file, args, op, busId, host, ct);
     private static string Quote(string value) => $"\"{value.Replace("\"", "\\\"")}\"";
@@ -200,4 +259,10 @@ public static class UsbIpBackendFactory
         if (OperatingSystem.IsLinux()) return new LinuxUsbIpBackend(eventSink, commandTimeout);
         throw new PlatformNotSupportedException("当前默认后端仅支持 Windows 与 Linux。macOS 可通过实现 IUsbIpServerBackend/IUsbIpClientBackend 扩展。 ");
     }
+
+    public static IUsbIpServerBackend CreateServerBackend(IUsbIpEventSink? eventSink = null, TimeSpan? commandTimeout = null) =>
+        (IUsbIpServerBackend)CreateDefault(eventSink, commandTimeout);
+
+    public static IUsbIpClientBackend CreateClientBackend(IUsbIpEventSink? eventSink = null, TimeSpan? commandTimeout = null) =>
+        (IUsbIpClientBackend)CreateDefault(eventSink, commandTimeout);
 }
