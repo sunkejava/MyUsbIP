@@ -1,17 +1,41 @@
+using System.Text.Json;
 using MyUsbIP.Abstractions;
 using MyUsbIP.Client;
 using MyUsbIP.Platform;
 using MyUsbIP.Runtime;
 using MyUsbIP.Server;
 
-var logPath = Path.Combine(AppContext.BaseDirectory, "logs", $"myusbip-{DateTime.Now:yyyyMMdd}.jsonl");
-await using var fileSink = new JsonLinesUsbIpEventSink(logPath);
-var memorySink = new MemoryUsbIpEventSink(500);
-var sink = new CompositeUsbIpEventSink(fileSink, memorySink);
+var configPath = Environment.GetEnvironmentVariable("MYUSBIP_CLIENT_CONFIG");
+if (string.IsNullOrWhiteSpace(configPath)) configPath = Path.Combine(AppContext.BaseDirectory, "clientsettings.json");
 
-var backendObject = UsbIpBackendFactory.CreateDefault(sink, TimeSpan.FromSeconds(15));
+var config = File.Exists(configPath)
+    ? JsonSerializer.Deserialize<ClientCliConfig>(await File.ReadAllTextAsync(configPath), new JsonSerializerOptions
+    {
+        PropertyNameCaseInsensitive = true,
+    }) ?? new ClientCliConfig()
+    : new ClientCliConfig();
+
+var configuredDirectory = Environment.ExpandEnvironmentVariables(config.Logging.Directory);
+var logDirectory = Path.IsPathRooted(configuredDirectory)
+    ? configuredDirectory
+    : Path.Combine(AppContext.BaseDirectory, configuredDirectory);
+Directory.CreateDirectory(logDirectory);
+LogFileMaintenance.Cleanup(logDirectory, "myusbip-client-*.jsonl", config.Logging.RetentionDays);
+
+var logPath = Path.Combine(logDirectory, $"myusbip-client-{DateTime.Now:yyyyMMdd}.jsonl");
+await using JsonLinesUsbIpEventSink? fileSink = config.Logging.Enabled ? new JsonLinesUsbIpEventSink(logPath) : null;
+var memorySink = new MemoryUsbIpEventSink(1000);
+IUsbIpEventSink sink = fileSink is null
+    ? memorySink
+    : new CompositeUsbIpEventSink(fileSink, memorySink);
+
+var timeout = TimeSpan.FromSeconds(Math.Max(1, config.CommandTimeoutSeconds));
+var backendObject = UsbIpBackendFactory.CreateDefault(sink, timeout);
 var serverBackend = (IUsbIpServerBackend)backendObject;
-var clientBackend = (IUsbIpClientBackend)backendObject;
+IUsbIpClientBackend clientBackend = OperatingSystem.IsWindows()
+    ? new UsbipWinVhciClientBackend(config.UsbipWinPath, sink, timeout)
+    : (IUsbIpClientBackend)backendObject;
+
 var server = new MyUsbIpServer(serverBackend, sink);
 var client = new MyUsbIpClient(clientBackend, sink);
 var diagnostics = new UsbIpDiagnosticsService(serverBackend, clientBackend, sink);
@@ -24,6 +48,14 @@ if (args.Length == 0)
 
 try
 {
+    await sink.WriteAsync(new UsbIpEvent(DateTimeOffset.Now, "cli.command", "Information", null, null, null,
+        string.Join(' ', args), new Dictionary<string, object?>
+        {
+            ["arguments"] = args,
+            ["configPath"] = configPath,
+            ["logPath"] = config.Logging.Enabled ? logPath : null,
+        }));
+
     switch (args[0].ToLowerInvariant())
     {
         case "server" when args.Length >= 2:
@@ -44,8 +76,10 @@ try
 }
 catch (Exception ex)
 {
+    await sink.WriteAsync(new UsbIpEvent(DateTimeOffset.Now, "cli.failed", "Error", null, null, null,
+        ex.Message, Exception: ex));
     Console.Error.WriteLine($"[失败] {ex.Message}");
-    Console.Error.WriteLine($"诊断日志: {logPath}");
+    if (config.Logging.Enabled) Console.Error.WriteLine($"诊断日志: {logPath}");
     Environment.ExitCode = 1;
 }
 
@@ -86,11 +120,24 @@ async Task HandleClientAsync(string[] command)
             PrintDevices(await client.GetRemoteDevicesAsync(command[1]));
             break;
         case "attach" when command.Length >= 3:
+        {
+            await sink.WriteAsync(new UsbIpEvent(DateTimeOffset.Now, "client.attach.request", "Information", null,
+                command[2], command[1], "请求远程挂载设备"));
             var result = await client.AttachAsync(command[1], command[2]);
-            Console.WriteLine(result.Success ? $"已挂载 {command[2]}，本地端口: {result.Port?.ToString() ?? "由 VHCI 分配"}" : result.Message);
+            await sink.WriteAsync(new UsbIpEvent(DateTimeOffset.Now, "client.attach.result",
+                result.Success ? "Information" : "Warning", null, command[2], command[1], result.Message,
+                new Dictionary<string, object?> { ["localPort"] = result.Port, ["success"] = result.Success }));
+            Console.WriteLine(result.Success
+                ? $"已挂载 {command[2]}，本地端口: {result.Port?.ToString() ?? "由 VHCI 分配"}"
+                : result.Message);
             break;
+        }
         case "detach" when command.Length >= 2 && int.TryParse(command[1], out var port):
+            await sink.WriteAsync(new UsbIpEvent(DateTimeOffset.Now, "client.detach.request", "Information", null,
+                null, null, $"请求卸载 VHCI 端口 {port}", new Dictionary<string, object?> { ["localPort"] = port }));
             await client.DetachAsync(port);
+            await sink.WriteAsync(new UsbIpEvent(DateTimeOffset.Now, "client.detach.completed", "Information", null,
+                null, null, $"已卸载 VHCI 端口 {port}", new Dictionary<string, object?> { ["localPort"] = port }));
             Console.WriteLine($"已卸载本地 VHCI 端口 {port}");
             break;
         case "diag":
@@ -104,9 +151,9 @@ async Task HandleClientAsync(string[] command)
 
 static void PrintDevices(IReadOnlyList<UsbIpDeviceInfo> devices)
 {
-    Console.WriteLine($"{ "BUSID",-10} {"VID:PID",-10} {"STATE",-10} PRODUCT");
+    Console.WriteLine($"{ "BUSID",-20} {"VID:PID",-10} {"STATE",-10} PRODUCT");
     foreach (var d in devices)
-        Console.WriteLine($"{d.BusId,-10} {d.VidPid,-10} {d.State,-10} {d.Product}");
+        Console.WriteLine($"{d.BusId,-20} {d.VidPid,-10} {d.State,-10} {d.Product}");
 }
 
 static Task PrintReportAsync(UsbIpHealthReport report)
@@ -122,7 +169,7 @@ static Task PrintReportAsync(UsbIpHealthReport report)
 
 static void PrintHelp()
 {
-    Console.WriteLine("MyUsbIP v1.0 CLI");
+    Console.WriteLine("MyUsbIP CLI");
     Console.WriteLine("  myusbip server list");
     Console.WriteLine("  myusbip server share <busid>");
     Console.WriteLine("  myusbip server unshare <busid>");
@@ -133,4 +180,20 @@ static void PrintHelp()
     Console.WriteLine("  myusbip client detach <local-port>");
     Console.WriteLine("  myusbip client diag");
     Console.WriteLine("  myusbip diag");
+}
+
+internal sealed record ClientCliConfig
+{
+    public string UsbipWinPath { get; init; } = "usbip.exe";
+    public int CommandTimeoutSeconds { get; init; } = 15;
+    public ClientLoggingConfig Logging { get; init; } = new();
+}
+
+internal sealed record ClientLoggingConfig
+{
+    public bool Enabled { get; init; } = true;
+    public string Directory { get; init; } = OperatingSystem.IsWindows()
+        ? "%ProgramData%\\MyUsbIP\\ClientLogs"
+        : "logs";
+    public int RetentionDays { get; init; } = 30;
 }
