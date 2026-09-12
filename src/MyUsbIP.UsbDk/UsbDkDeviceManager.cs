@@ -11,7 +11,7 @@ namespace MyUsbIP.UsbDk;
 public sealed class UsbDkDeviceManager : IDisposable
 {
     private readonly ConcurrentDictionary<string, RedirectedDevice> redirected = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<uint, (string BusId, ulong Endpoint)> pendingEndpoints = new();
+    private readonly ConcurrentDictionary<(string BusId, uint Sequence), ulong> pendingEndpoints = new();
     private bool disposed;
 
     public Task<IReadOnlyList<UsbIpDeviceInfo>> ListAsync(CancellationToken cancellationToken = default)
@@ -63,13 +63,11 @@ public sealed class UsbDkDeviceManager : IDisposable
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!redirected.TryGetValue(busId, out var device)) return Task.CompletedTask;
-        if (!pendingEndpoints.TryRemove(sequence, out var pending)) return Task.CompletedTask;
-        if (!string.Equals(pending.BusId, busId, StringComparison.OrdinalIgnoreCase)) return Task.CompletedTask;
+        if (!pendingEndpoints.TryRemove((busId, sequence), out var endpoint)) return Task.CompletedTask;
 
-        // UsbDk 公共 Helper API 没有按 Sequence 取消接口，因此按端点 Abort。
-        // 这可能同时取消同一端点上的多个请求，随后 ResetPipe 恢复端点。
-        UsbDkNative.UsbDk_AbortPipe(device.Handle, pending.Endpoint);
-        UsbDkNative.UsbDk_ResetPipe(device.Handle, pending.Endpoint);
+        // 不同 USB/IP 会话的 sequence 可能相同，因此必须按 BusId + Sequence 唯一定位。
+        UsbDkNative.UsbDk_AbortPipe(device.Handle, endpoint);
+        UsbDkNative.UsbDk_ResetPipe(device.Handle, endpoint);
         return Task.CompletedTask;
     }
 
@@ -107,6 +105,7 @@ public sealed class UsbDkDeviceManager : IDisposable
 
         var overlappedPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NativeOverlappedData>());
         var requestPtr = Marshal.AllocHGlobal(Marshal.SizeOf<UsbDkTransferRequest>());
+        var pendingKey = (busId, request.Sequence);
         try
         {
             if (bufferLength > 0) Marshal.Copy(new byte[bufferLength], 0, buffer, bufferLength);
@@ -132,7 +131,7 @@ public sealed class UsbDkDeviceManager : IDisposable
                 TransferType = (ulong)transferType,
             }, requestPtr, false);
 
-            pendingEndpoints[request.Sequence] = (busId, endpoint);
+            pendingEndpoints[pendingKey] = endpoint;
             var result = request.Direction != 0
                 ? UsbDkNative.UsbDk_ReadPipe(device.Handle, requestPtr, overlappedPtr)
                 : UsbDkNative.UsbDk_WritePipe(device.Handle, requestPtr, overlappedPtr);
@@ -153,11 +152,6 @@ public sealed class UsbDkDeviceManager : IDisposable
             var nativeRequest = Marshal.PtrToStructure<UsbDkTransferRequest>(requestPtr);
             var transferred = checked((int)Math.Min((ulong)int.MaxValue, nativeRequest.Result.Generic.BytesTransferred));
             var status = nativeRequest.Result.Generic.UsbdStatus == 0 ? 0 : -5;
-
-            // UsbDk 的 BytesTransferred 表示 USB 数据阶段实际传输的字节数，
-            // 对 Control Transfer 不包含开头 8 字节 Setup Packet。
-            // 因此这里绝不能再减 8，否则 GET_DESCRIPTOR(9) 会被错误报告成 1 字节，
-            // usbip-win 会报 fetch_descriptor: too short response: actual length: 1。
             var actualLength = Math.Max(0, transferred);
 
             byte[] payload = Array.Empty<byte>();
@@ -181,7 +175,7 @@ public sealed class UsbDkDeviceManager : IDisposable
         }
         finally
         {
-            pendingEndpoints.TryRemove(request.Sequence, out _);
+            pendingEndpoints.TryRemove(pendingKey, out _);
             Marshal.FreeHGlobal(requestPtr);
             Marshal.FreeHGlobal(overlappedPtr);
             UsbDkNative.CloseHandle(eventHandle);
@@ -210,7 +204,6 @@ public sealed class UsbDkDeviceManager : IDisposable
         };
     }
 
-    // USB/IP busid 字段只有 32 字节，使用两个低 32 位十六进制值保证固定且短小。
     private static string GetBusId(UsbDkDeviceInfoNative native)
         => $"{unchecked((uint)native.FilterId):X8}-{unchecked((uint)native.Port):X8}";
 
