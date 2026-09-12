@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.1.3
+
+针对 CH340 `1A86:7523` 首次远程 Attach/串口收发正常、Detach 后第二次 Attach 失败的问题，修正 UsbDk 会话清理，并完善服务端/客户端可持久化诊断日志。
+
+- USB/IP 会话结束时不再保留旧 UsbDk Redirect/Handle；Detach、TCP 断开或异常结束后执行 `UsbDk_StopRedirect`，下一次 Attach 使用新的 Redirect/Handle，避免 CH340 endpoint/设备状态残留。
+- USB/IP TCP 连接结束时主动取消所有尚未完成的 URB，触发 UsbDk `AbortPipe/ResetPipe`，避免阻塞在 `GetOverlappedResult` 的请求阻止会话释放。
+- UsbDk Pending Request 从单独 `Sequence` 改为 `(BusId, Sequence)` 唯一定位，避免多个 USB/UKey 同时连接时相同 sequence 冲突并取消错设备。
+- 服务端增加 IMPORT 请求、接受/拒绝、会话关闭/释放、URB 失败、UNLINK 等结构化 JSONL 日志；可选记录每个成功 URB。
+- 客户端 MyUsbIP CLI 增加 Attach/Detach、`usbip.exe` ExitCode、stdout/stderr、超时等 JSONL 日志。
+- 服务端默认日志目录：`C:\ProgramData\MyUsbIP\ServerLogs`；客户端默认日志目录：`C:\ProgramData\MyUsbIP\ClientLogs`。
+- 日志目录、启停、保留天数可分别通过 `appsettings.json` 与 `clientsettings.json` 配置，默认保留 30 天。
+- 错误日志不再直接序列化完整 `.NET Exception`，改为安全记录异常类型、消息、堆栈、HResult 与 InnerException，避免异常事件本身因 JSON 序列化失败而丢失。
+- Windows Setup 覆盖升级时保留用户已经修改的 `appsettings.json` / `clientsettings.json`，不会重置日志策略。
+- 注意：直接手工运行第三方 `usbip.exe` 的客户端命令无法被 MyUsbIP CLI 记录；需要完整客户端诊断链路时请使用 `myusbip client attach/detach`。
+
+该版本的 CH340 重连修复仍需要目标 Windows + CH340 实机再次验证；构建通过不等同于硬件回归通过。
+
 ## 1.1.2
 
 在 CH340 已完成远程 Attach、串口收发实机验证后，继续修复 USB/IP 会话管理与设备元数据问题。
