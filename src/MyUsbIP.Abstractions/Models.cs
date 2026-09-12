@@ -16,6 +16,20 @@ public sealed record UsbIpDeviceInfo
     public UsbIpDeviceState State { get; init; }
     public string? ClientAddress { get; init; }
 
+    /// <summary>USB/IP 线协议中的设备路径。为空时回退到 InstanceId/BusId。</summary>
+    public string? Path { get; init; }
+
+    /// <summary>USB/IP 线协议中的远端总线号。</summary>
+    public uint BusNumber { get; init; }
+
+    /// <summary>USB/IP 线协议中的远端设备号。</summary>
+    public uint DeviceNumber { get; init; }
+
+    /// <summary>
+    /// 标准 USB/IP usb_device_speed 值：0 Unknown、1 Low、2 Full、3 High、4 Wireless、5 Super、6 SuperPlus。
+    /// </summary>
+    public uint Speed { get; init; } = 2;
+
     public string VidPid => $"{VendorId:X4}:{ProductId:X4}";
 }
 
