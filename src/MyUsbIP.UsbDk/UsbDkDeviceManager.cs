@@ -153,7 +153,12 @@ public sealed class UsbDkDeviceManager : IDisposable
             var nativeRequest = Marshal.PtrToStructure<UsbDkTransferRequest>(requestPtr);
             var transferred = checked((int)Math.Min((ulong)int.MaxValue, nativeRequest.Result.Generic.BytesTransferred));
             var status = nativeRequest.Result.Generic.UsbdStatus == 0 ? 0 : -5;
-            var actualLength = isControl ? Math.Max(0, transferred - 8) : transferred;
+
+            // UsbDk 的 BytesTransferred 表示 USB 数据阶段实际传输的字节数，
+            // 对 Control Transfer 不包含开头 8 字节 Setup Packet。
+            // 因此这里绝不能再减 8，否则 GET_DESCRIPTOR(9) 会被错误报告成 1 字节，
+            // usbip-win 会报 fetch_descriptor: too short response: actual length: 1。
+            var actualLength = Math.Max(0, transferred);
 
             byte[] payload = Array.Empty<byte>();
             if (request.Direction != 0 && actualLength > 0)
