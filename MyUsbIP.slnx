@@ -6,6 +6,8 @@
     <Project Path="src/MyUsbIP.Client/MyUsbIP.Client.csproj" />
     <Project Path="src/MyUsbIP.Platform/MyUsbIP.Platform.csproj" />
     <Project Path="src/MyUsbIP.Runtime/MyUsbIP.Runtime.csproj" />
+    <Project Path="src/MyUsbIP.WindowsNative/MyUsbIP.WindowsNative.csproj" />
+    <Project Path="src/MyUsbIP.NativeServer/MyUsbIP.NativeServer.csproj" />
   </Folder>
   <Folder Name="/apps/">
     <Project Path="apps/MyUsbIP.Daemon/MyUsbIP.Daemon.csproj" />
