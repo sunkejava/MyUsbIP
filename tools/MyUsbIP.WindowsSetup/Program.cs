@@ -213,14 +213,26 @@ static void InstallClient(string baseDir, string dependencyPath, Action<string> 
     var usbip = Directory.EnumerateFiles(usbipDir, "usbip.exe", SearchOption.AllDirectories).FirstOrDefault()
         ?? throw new FileNotFoundException("usbip-win 压缩包中未找到 usbip.exe。");
 
-    write("安装/更新 usbip-win VHCI(UDE)...");
-    var result = RunCaptureArgs(usbip, "install", "-u");
-    if (result.ExitCode != 0)
+    // 覆盖升级时 VHCI/UDE 驱动通常已经正常安装。
+    // usbip-win 的 install 并不是幂等操作，重复安装可能导致驱动安装异常，因此先用 port 做健康检查。
+    write("检查已有 usbip-win VHCI 驱动...");
+    var existingVhci = RunCaptureArgs(usbip, "port");
+    if (existingVhci.ExitCode == 0)
     {
-        write("UDE 模式安装失败，尝试自动模式...");
-        result = RunCaptureArgs(usbip, "install");
+        write("检测到现有 VHCI 驱动工作正常，跳过重复驱动安装。");
     }
-    if (result.ExitCode != 0) throw new InvalidOperationException($"VHCI 安装失败，ExitCode={result.ExitCode}\n{result.Output}");
+    else
+    {
+        write("未检测到可用 VHCI，执行首次安装/修复安装(UDE)...");
+        var result = RunCaptureArgs(usbip, "install", "-u");
+        if (result.ExitCode != 0)
+        {
+            write("UDE 模式安装失败，尝试自动模式...");
+            result = RunCaptureArgs(usbip, "install");
+        }
+        if (result.ExitCode != 0)
+            throw new InvalidOperationException($"VHCI 安装失败，ExitCode={result.ExitCode}\n{result.Output}");
+    }
 
     write("配置 usbip.exe 系统 PATH...");
     var binDir = Path.GetDirectoryName(usbip)!;
