@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using MyUsbIP.Abstractions;
 using MyUsbIP.Protocol;
 using MyUsbIP.Runtime;
@@ -6,6 +7,7 @@ var failures = new List<string>();
 
 await TestOperationHeaderAsync();
 await TestBusIdAsync();
+await TestDeviceWireMetadataAsync();
 TestAutoShareRule();
 await TestLeaseManagerAsync();
 
@@ -36,6 +38,30 @@ async Task TestBusIdAsync()
     stream.Position = 0;
     var actual = await UsbIpCodec.ReadBusIdAsync(stream);
     Assert(actual == "2-3.1", "BusId 编解码失败");
+}
+
+async Task TestDeviceWireMetadataAsync()
+{
+    var device = new UsbIpDeviceInfo
+    {
+        BusId = "00000008-00000004",
+        InstanceId = "USB\\VID_1A86&PID_7523\\4",
+        Path = "USB\\VID_1A86&PID_7523\\4",
+        BusNumber = 8,
+        DeviceNumber = 4,
+        Speed = 2,
+        VendorId = 0x1A86,
+        ProductId = 0x7523,
+        State = UsbIpDeviceState.Available,
+    };
+
+    await using var stream = new MemoryStream();
+    await UsbIpWire.WriteDeviceAsync(stream, device);
+    var bytes = stream.ToArray();
+    Assert(bytes.Length == UsbIpWire.DeviceWireSize, "USB/IP 设备结构长度错误");
+    Assert(BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(288, 4)) == 8, "USB/IP busnum 写入错误");
+    Assert(BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(292, 4)) == 4, "USB/IP devnum 写入错误");
+    Assert(BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(296, 4)) == 2, "USB/IP speed 写入错误");
 }
 
 void TestAutoShareRule()
