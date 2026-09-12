@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.IO.Compression;
 using System.Net.Sockets;
 using System.Text.Json;
 using Microsoft.Win32;
@@ -26,7 +25,7 @@ var baseDir = EmbeddedPayload.PrepareWorkingDirectory(AppContext.BaseDirectory, 
 var logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "MyUsbIP", "InstallerLogs");
 Directory.CreateDirectory(logDir);
 var logPath = Path.Combine(logDir, $"setup-{role}-{DateTime.Now:yyyyMMdd-HHmmss}.log");
-using var log = new StreamWriter(logPath, append: false) { AutoFlush = true };
+using var log = new StreamWriter(logPath, append: false, new System.Text.UTF8Encoding(false)) { AutoFlush = true };
 
 void Write(string text)
 {
@@ -61,7 +60,7 @@ try
     StopExistingRuntime(role, Write);
 
     if (role == "server") InstallServer(baseDir, dependencyPath, Write);
-    else InstallClient(baseDir, dependencyPath, Write);
+    else InstallClient(baseDir, dependencyPath, package, Write);
 
     Write("安装与内置自检全部完成。");
     Write($"安装日志: {logPath}");
@@ -98,7 +97,6 @@ static void StopExistingRuntime(string role, Action<string> write)
             RunArgs("sc.exe", "stop", serviceName);
             WaitServiceStopped(serviceName, TimeSpan.FromSeconds(15));
         }
-
         KillProcesses(write, "myusbipd");
     }
     else
@@ -112,7 +110,8 @@ static void StopExistingRuntime(string role, Action<string> write)
             WaitServiceStopped(serviceName, TimeSpan.FromSeconds(15));
         }
 
-        KillProcesses(write, "myusbip", "usbip");
+        // 旧 cezanne/usbip-win attach 会派生长期运行的 attacher.exe；升级前必须一起结束。
+        KillProcesses(write, "myusbip", "usbip", "attacher", "wusbip");
     }
 
     Thread.Sleep(800);
@@ -138,9 +137,7 @@ static void KillProcesses(Action<string> write, params string[] processNames)
                     if (!process.WaitForExit(10000))
                         throw new InvalidOperationException($"进程 {process.ProcessName}.exe PID={process.Id} 在 10 秒内未退出。");
                 }
-                catch (ArgumentException)
-                {
-                }
+                catch (ArgumentException) { }
             }
         }
     }
@@ -198,54 +195,86 @@ static void InstallServer(string baseDir, string dependencyPath, Action<string> 
     write("服务端自检通过：UsbDk 正常，TCP 3240 正常监听。");
 }
 
-static void InstallClient(string baseDir, string dependencyPath, Action<string> write)
+static void InstallClient(string baseDir, string dependencyPath, DependencyPackage package, Action<string> write)
 {
-    var installDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "MyUsbIP", "Client");
+    var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+    var installDir = Path.Combine(programFiles, "MyUsbIP", "Client");
     var payload = Path.Combine(baseDir, "payload", "client");
     if (!Directory.Exists(payload)) throw new DirectoryNotFoundException($"缺少客户端程序目录: {payload}");
 
-    write("部署客户端程序...");
+    write("部署 MyUsbIP 客户端程序...");
     CopyDirectory(payload, installDir, new[] { "clientsettings.json" });
     Directory.CreateDirectory(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "MyUsbIP", "ClientLogs"));
-    var usbipDir = Path.Combine(installDir, "usbip-win");
-    if (Directory.Exists(usbipDir)) Directory.Delete(usbipDir, true);
-    ZipFile.ExtractToDirectory(dependencyPath, usbipDir, overwriteFiles: true);
-    var usbip = Directory.EnumerateFiles(usbipDir, "usbip.exe", SearchOption.AllDirectories).FirstOrDefault()
-        ?? throw new FileNotFoundException("usbip-win 压缩包中未找到 usbip.exe。");
 
-    // 覆盖升级时 VHCI/UDE 驱动通常已经正常安装。
-    // usbip-win 的 install 并不是幂等操作，重复安装可能导致驱动安装异常，因此先用 port 做健康检查。
-    write("检查已有 usbip-win VHCI 驱动...");
-    var existingVhci = RunCaptureArgs(usbip, "port");
-    if (existingVhci.ExitCode == 0)
+    // 从旧 cezanne/usbip-win 迁移到 usbip-win2。两个 VHCI 不应并存，否则 PATH/驱动状态容易混淆。
+    var legacyDir = Path.Combine(installDir, "usbip-win");
+    var legacyUsbip = Directory.Exists(legacyDir)
+        ? Directory.EnumerateFiles(legacyDir, "usbip.exe", SearchOption.AllDirectories).FirstOrDefault()
+        : null;
+    if (!string.IsNullOrWhiteSpace(legacyUsbip) && File.Exists(legacyUsbip))
     {
-        write("检测到现有 VHCI 驱动工作正常，跳过重复驱动安装。");
+        write("检测到旧 usbip-win VHCI，执行卸载迁移...");
+        var uninstall = RunCaptureArgs(legacyUsbip, "uninstall", "-f");
+        write($"旧 VHCI 卸载 ExitCode={uninstall.ExitCode} {uninstall.Output.Trim()}");
     }
-    else
+    if (Directory.Exists(legacyDir))
     {
-        write("未检测到可用 VHCI，执行首次安装/修复安装(UDE)...");
-        var result = RunCaptureArgs(usbip, "install", "-u");
-        if (result.ExitCode != 0)
+        try { Directory.Delete(legacyDir, true); }
+        catch (Exception ex) { write($"清理旧 usbip-win 目录失败，将继续安装 usbip-win2：{ex.Message}"); }
+    }
+
+    var usbipDir = Path.Combine(programFiles, "USBip");
+    var usbip = Path.Combine(usbipDir, "usbip.exe");
+    var needInstall = true;
+    if (File.Exists(usbip))
+    {
+        var version = RunCaptureArgs(usbip, "-V");
+        var port = RunCaptureArgs(usbip, "port");
+        if (version.ExitCode == 0 && port.ExitCode == 0 &&
+            version.Output.Contains(package.Version, StringComparison.OrdinalIgnoreCase))
         {
-            write("UDE 模式安装失败，尝试自动模式...");
-            result = RunCaptureArgs(usbip, "install");
+            needInstall = false;
+            write($"检测到 usbip-win2 {package.Version} 且 UDE/VHCI 正常，跳过重复驱动安装。");
         }
-        if (result.ExitCode != 0)
-            throw new InvalidOperationException($"VHCI 安装失败，ExitCode={result.ExitCode}\n{result.Output}");
     }
 
-    write("配置 usbip.exe 系统 PATH...");
-    var binDir = Path.GetDirectoryName(usbip)!;
-    using var envKey = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\Session Manager\Environment", writable: true)
-        ?? throw new InvalidOperationException("无法打开系统环境变量注册表项。");
-    var path = Convert.ToString(envKey.GetValue("Path", string.Empty, RegistryValueOptions.DoNotExpandEnvironmentNames)) ?? string.Empty;
-    if (!path.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Contains(binDir, StringComparer.OrdinalIgnoreCase))
-        envKey.SetValue("Path", path.TrimEnd(';') + ";" + binDir, RegistryValueKind.ExpandString);
+    if (needInstall)
+    {
+        write($"安装/升级 usbip-win2 {package.Version}...");
+        var code = RunArgs(dependencyPath,
+            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/TYPE=compact", "/CLOSEAPPLICATIONS");
+        if (code is not (0 or 3010))
+            throw new InvalidOperationException($"usbip-win2 安装失败，ExitCode={code}");
+    }
+
+    if (!File.Exists(usbip))
+        throw new FileNotFoundException("usbip-win2 安装完成但未找到 usbip.exe。", usbip);
+
+    write("配置 usbip-win2 系统 PATH...");
+    UpdateMachinePath(usbipDir, legacyDir);
 
     write("执行客户端自检...");
+    var versionResult = RunCaptureArgs(usbip, "-V");
+    if (versionResult.ExitCode != 0)
+        throw new InvalidOperationException($"usbip.exe -V 执行失败。\n{versionResult.Output}");
     var portResult = RunCaptureArgs(usbip, "port");
-    if (portResult.ExitCode != 0) throw new InvalidOperationException($"usbip.exe port 执行失败，VHCI 可能未正常安装。\n{portResult.Output}");
-    write("客户端自检通过：usbip.exe 可执行，VHCI 已响应。");
+    if (portResult.ExitCode != 0)
+        throw new InvalidOperationException($"usbip.exe port 执行失败，usbip-win2 UDE/VHCI 可能未正常安装。\n{portResult.Output}");
+    write($"客户端自检通过：{versionResult.Output.Trim()}，UDE/VHCI 已响应。");
+}
+
+static void UpdateMachinePath(string addDirectory, string legacyDirectory)
+{
+    using var envKey = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\Session Manager\Environment", writable: true)
+        ?? throw new InvalidOperationException("无法打开系统环境变量注册表项。");
+    var current = Convert.ToString(envKey.GetValue("Path", string.Empty, RegistryValueOptions.DoNotExpandEnvironmentNames)) ?? string.Empty;
+    var entries = current.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Where(x => !string.Equals(x.TrimEnd('\\'), legacyDirectory.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
+        .Where(x => !x.Contains(Path.Combine("MyUsbIP", "Client", "usbip-win"), StringComparison.OrdinalIgnoreCase))
+        .ToList();
+    if (!entries.Any(x => string.Equals(x.TrimEnd('\\'), addDirectory.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)))
+        entries.Add(addDirectory);
+    envKey.SetValue("Path", string.Join(';', entries), RegistryValueKind.ExpandString);
 }
 
 static void CopyDirectory(string source, string destination, string[]? preserveExistingRelativeFiles = null)
@@ -328,6 +357,8 @@ internal sealed class DependencyPackage
 {
     public string Role { get; set; } = string.Empty;
     public bool Enabled { get; set; }
+    public string Version { get; set; } = string.Empty;
     public string FileName { get; set; } = string.Empty;
     public string Sha256 { get; set; } = string.Empty;
+    public string InstallType { get; set; } = string.Empty;
 }
