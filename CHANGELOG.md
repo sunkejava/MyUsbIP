@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.1.2
+
+在 CH340 已完成远程 Attach、串口收发实机验证后，继续修复 USB/IP 会话管理与设备元数据问题。
+
+- 同一物理 `BUSID` 同一时刻只允许一个活动 USB/IP IMPORT 会话，避免重复 Attach 到多个 VHCI 端口后多个客户端同时向同一个 UsbDk Handle 发送 URB。
+- 第二次 IMPORT 同一设备时返回标准 USB/IP 失败响应，不再直接复用现有 Redirect 句柄。
+- 客户端 detach、TCP 断开或会话异常结束后自动释放会话独占锁，允许后续重新 Attach。
+- SUBMIT 增加活动会话校验，阻止已结束会话继续向设备提交 URB。
+- `UsbIpDeviceInfo` 增加 Path、BusNumber、DeviceNumber、Speed 等标准 USB/IP 线协议元数据。
+- USB/IP DEVLIST / IMPORT 响应不再固定写死 `busnum=0/devnum=0/speed=2`，当前 UsbDk Windows BusId 可解析出真实 FilterId/Port 作为 bus/dev 标识。
+- 增加 USB/IP Device Wire 元数据回归测试。
+- `usbip-win` 的 `unknown host, remote port and remote busid` 还可能来自客户端本地 connection record，属于上游 usbip-win 已知行为；MyUsbIP 已修复服务端可控的 bus/dev/path 字段。
+
 ## 1.1.1
 
 修复 Windows UsbDk 服务端 Control Transfer 返回长度计算错误。
