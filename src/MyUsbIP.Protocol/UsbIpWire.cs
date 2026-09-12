@@ -62,12 +62,12 @@ public static class UsbIpWire
     public static async ValueTask WriteDeviceAsync(Stream stream, UsbIpDeviceInfo device, CancellationToken cancellationToken = default)
     {
         var buffer = new byte[DeviceWireSize];
-        WriteAscii(buffer.AsSpan(0, 256), device.InstanceId ?? device.Product ?? device.BusId);
+        WriteAscii(buffer.AsSpan(0, 256), device.Path ?? device.InstanceId ?? device.Product ?? device.BusId);
         WriteAscii(buffer.AsSpan(256, 32), device.BusId);
 
-        BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(288, 4), 0);
-        BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(292, 4), 0);
-        BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(296, 4), 2);
+        BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(288, 4), device.BusNumber);
+        BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(292, 4), device.DeviceNumber);
+        BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(296, 4), device.Speed);
         BinaryPrimitives.WriteUInt16BigEndian(buffer.AsSpan(300, 2), device.VendorId);
         BinaryPrimitives.WriteUInt16BigEndian(buffer.AsSpan(302, 2), device.ProductId);
         BinaryPrimitives.WriteUInt16BigEndian(buffer.AsSpan(304, 2), 0x0100);
@@ -104,6 +104,12 @@ public static class UsbIpWire
             cancellationToken);
         await WriteDeviceAsync(stream, device, cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>返回标准 USB/IP IMPORT 失败响应，避免客户端在设备忙时只看到连接被直接关闭。</summary>
+    public static ValueTask WriteImportFailureAsync(Stream stream, uint status = 1, CancellationToken cancellationToken = default)
+        => UsbIpCodec.WriteOperationHeaderAsync(stream,
+            new UsbIpOperationHeader(UsbIpProtocolConstants.Version, UsbIpProtocolConstants.OpRepImport, status),
+            cancellationToken);
 
     public static async ValueTask<UsbIpSubmitRequest> ReadSubmitAsync(Stream stream, uint sequence, uint deviceId, uint direction, uint endpoint, CancellationToken cancellationToken = default)
     {
