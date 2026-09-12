@@ -14,13 +14,16 @@ public sealed class UsbipWinVhciClientBackend : IUsbIpClientBackend
 {
     private readonly UsbIpProcessRunner runner;
     private readonly string usbipPath;
+    private readonly string receiveMode;
 
     public UsbipWinVhciClientBackend(
         string usbipPath = "usbip.exe",
         IUsbIpEventSink? eventSink = null,
-        TimeSpan? commandTimeout = null)
+        TimeSpan? commandTimeout = null,
+        string receiveMode = "zero-copy")
     {
         this.usbipPath = ResolveUsbipPath(usbipPath);
+        this.receiveMode = NormalizeReceiveMode(receiveMode);
         runner = new UsbIpProcessRunner(
             eventSink ?? NullUsbIpEventSink.Instance,
             commandTimeout ?? TimeSpan.FromSeconds(30));
@@ -78,11 +81,12 @@ public sealed class UsbipWinVhciClientBackend : IUsbIpClientBackend
         int port = 3240,
         CancellationToken cancellationToken = default)
     {
-        // usbip-win2 的 attach 在 UDE 驱动确认挂载后会直接返回，并输出 successfully attached to port N。
-        // --once：只进行本次 Attach，不让客户端在服务端暂时不可达时持续重试。
+        // usbip-win2 0.9.8.0：
+        // --once 只执行一次 Attach，不进入自动重试；
+        // --receive-mode 可选择 zero-copy 或 low-latency，默认 zero-copy 适合大多数 UKey/串口/存储设备。
         var result = await runner.RunAsync(
             usbipPath,
-            $"{BuildTcpPortOption(port)}attach -r {Quote(host)} -b {Quote(busId)} --once",
+            $"{BuildTcpPortOption(port)}attach -r {Quote(host)} -b {Quote(busId)} --once --receive-mode={receiveMode}",
             "client.attach",
             busId,
             host,
@@ -96,8 +100,8 @@ public sealed class UsbipWinVhciClientBackend : IUsbIpClientBackend
             busId,
             localPort,
             localPort is null
-                ? "设备已提交到 usbip-win2 UDE/VHCI，未能解析本地端口。"
-                : $"已挂载到 usbip-win2 UDE/VHCI 端口 {localPort}。 ");
+                ? $"设备已提交到 usbip-win2 UDE/VHCI，receive-mode={receiveMode}，未能解析本地端口。"
+                : $"已挂载到 usbip-win2 UDE/VHCI 端口 {localPort}，receive-mode={receiveMode}。 ");
     }
 
     public async Task DetachAsync(int port, CancellationToken cancellationToken = default)
@@ -178,7 +182,19 @@ public sealed class UsbipWinVhciClientBackend : IUsbIpClientBackend
     private static string BuildTcpPortOption(int port)
         => port == UsbIpProtocolConstants.DefaultPort
             ? string.Empty
-            : $"-t {port.ToString(CultureInfo.InvariantCulture)} ";
+            : $"--tcp-port {port.ToString(CultureInfo.InvariantCulture)} ";
+
+    private static string NormalizeReceiveMode(string value)
+    {
+        var mode = string.IsNullOrWhiteSpace(value) ? "zero-copy" : value.Trim().ToLowerInvariant();
+        return mode switch
+        {
+            "zero-copy" => "zero-copy",
+            "low-latency" => "low-latency",
+            _ => throw new ArgumentOutOfRangeException(nameof(value), value,
+                "usbip-win2 ReceiveMode 仅支持 zero-copy 或 low-latency。"),
+        };
+    }
 
     private static string ResolveUsbipPath(string configuredPath)
     {
