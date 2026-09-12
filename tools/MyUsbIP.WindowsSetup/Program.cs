@@ -83,7 +83,6 @@ static void StopExistingRuntime(string role, Action<string> write)
 
     if (string.Equals(role, "server", StringComparison.OrdinalIgnoreCase))
     {
-        // 当前版本服务端由 SYSTEM 开机计划任务托管。升级前先结束任务，避免旧进程继续占用 EXE/DLL。
         var task = RunCaptureArgs("schtasks.exe", "/Query", "/TN", "MyUsbIP USB-IP Server");
         if (task.ExitCode == 0)
         {
@@ -91,7 +90,6 @@ static void StopExistingRuntime(string role, Action<string> write)
             RunArgs("schtasks.exe", "/End", "/TN", "MyUsbIP USB-IP Server");
         }
 
-        // 兼容早期版本曾使用 SCM 注册服务的情况。不存在时 sc.exe 会返回非 0，直接忽略。
         foreach (var serviceName in new[] { "MyUsbIP", "MyUsbIP.Server", "MyUsbIP USB-IP Server" })
         {
             var service = RunCaptureArgs("sc.exe", "query", serviceName);
@@ -105,7 +103,6 @@ static void StopExistingRuntime(string role, Action<string> write)
     }
     else
     {
-        // 客户端目前没有常驻 SCM 服务，但升级时可能有 CLI/usbip.exe 正在运行并锁定安装目录。
         foreach (var serviceName in new[] { "MyUsbIP.Client", "MyUsbIP Client" })
         {
             var service = RunCaptureArgs("sc.exe", "query", serviceName);
@@ -118,7 +115,6 @@ static void StopExistingRuntime(string role, Action<string> write)
         KillProcesses(write, "myusbip", "usbip");
     }
 
-    // taskkill/sc stop 返回后文件句柄释放可能存在极短延迟，给内核和杀毒软件一点收尾时间。
     Thread.Sleep(800);
     write("旧版本运行实例已停止，可以执行覆盖升级。");
 }
@@ -144,7 +140,6 @@ static void KillProcesses(Action<string> write, params string[] processNames)
                 }
                 catch (ArgumentException)
                 {
-                    // 进程已自行退出。
                 }
             }
         }
@@ -174,7 +169,7 @@ static void InstallServer(string baseDir, string dependencyPath, Action<string> 
     if (code is not (0 or 3010)) throw new InvalidOperationException($"UsbDk 安装失败，ExitCode={code}，日志={msiLog}");
 
     write("部署服务端程序...");
-    CopyDirectory(payload, installDir, ["appsettings.json"]);
+    CopyDirectory(payload, installDir, new[] { "appsettings.json" });
     Directory.CreateDirectory(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "MyUsbIP", "ServerLogs"));
     var helper = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "UsbDk Runtime Library", "UsbDkHelper.dll");
     if (!File.Exists(helper)) throw new FileNotFoundException("UsbDk 已安装但未找到 UsbDkHelper.dll。", helper);
@@ -210,7 +205,7 @@ static void InstallClient(string baseDir, string dependencyPath, Action<string> 
     if (!Directory.Exists(payload)) throw new DirectoryNotFoundException($"缺少客户端程序目录: {payload}");
 
     write("部署客户端程序...");
-    CopyDirectory(payload, installDir, ["clientsettings.json"]);
+    CopyDirectory(payload, installDir, new[] { "clientsettings.json" });
     Directory.CreateDirectory(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "MyUsbIP", "ClientLogs"));
     var usbipDir = Path.Combine(installDir, "usbip-win");
     if (Directory.Exists(usbipDir)) Directory.Delete(usbipDir, true);
@@ -241,7 +236,7 @@ static void InstallClient(string baseDir, string dependencyPath, Action<string> 
     write("客户端自检通过：usbip.exe 可执行，VHCI 已响应。");
 }
 
-static void CopyDirectory(string source, string destination, IReadOnlySet<string>? preserveExistingRelativeFiles = null)
+static void CopyDirectory(string source, string destination, string[]? preserveExistingRelativeFiles = null)
 {
     Directory.CreateDirectory(destination);
     foreach (var dir in Directory.EnumerateDirectories(source, "*", SearchOption.AllDirectories))
@@ -251,7 +246,7 @@ static void CopyDirectory(string source, string destination, IReadOnlySet<string
         var relative = Path.GetRelativePath(source, file);
         var target = Path.Combine(destination, relative);
         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-        if (preserveExistingRelativeFiles?.Contains(relative) == true && File.Exists(target)) continue;
+        if (preserveExistingRelativeFiles?.Contains(relative, StringComparer.OrdinalIgnoreCase) == true && File.Exists(target)) continue;
         File.Copy(file, target, true);
     }
 }
