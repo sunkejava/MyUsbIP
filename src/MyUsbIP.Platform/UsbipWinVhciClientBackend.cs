@@ -12,7 +12,8 @@ namespace MyUsbIP.Platform;
 /// </summary>
 public sealed class UsbipWinVhciClientBackend : IUsbIpClientBackend
 {
-    private readonly UsbIpProcessRunner runner;
+    private readonly UsbIpProcessRunner commandRunner;
+    private readonly UsbIpProcessRunner attachRunner;
     private readonly string usbipPath;
     private readonly string receiveMode;
 
@@ -20,13 +21,15 @@ public sealed class UsbipWinVhciClientBackend : IUsbIpClientBackend
         string usbipPath = "usbip.exe",
         IUsbIpEventSink? eventSink = null,
         TimeSpan? commandTimeout = null,
+        TimeSpan? attachTimeout = null,
         string receiveMode = "zero-copy")
     {
         this.usbipPath = ResolveUsbipPath(usbipPath);
         this.receiveMode = NormalizeReceiveMode(receiveMode);
-        runner = new UsbIpProcessRunner(
-            eventSink ?? NullUsbIpEventSink.Instance,
-            commandTimeout ?? TimeSpan.FromSeconds(30));
+        var sink = eventSink ?? NullUsbIpEventSink.Instance;
+        var normalTimeout = commandTimeout ?? TimeSpan.FromSeconds(30);
+        commandRunner = new UsbIpProcessRunner(sink, normalTimeout);
+        attachRunner = new UsbIpProcessRunner(sink, attachTimeout ?? normalTimeout);
     }
 
     public Task<UsbIpBackendCapabilities> GetCapabilitiesAsync(CancellationToken cancellationToken = default)
@@ -42,7 +45,7 @@ public sealed class UsbipWinVhciClientBackend : IUsbIpClientBackend
         int port = 3240,
         CancellationToken cancellationToken = default)
     {
-        var result = await runner.RunAsync(
+        var result = await commandRunner.RunAsync(
             usbipPath,
             $"{BuildTcpPortOption(port)}list -r {Quote(host)}",
             "client.remote.list",
@@ -84,7 +87,7 @@ public sealed class UsbipWinVhciClientBackend : IUsbIpClientBackend
         // usbip-win2 0.9.8.0：
         // --once 只执行一次 Attach，不进入自动重试；
         // --receive-mode 可选择 zero-copy 或 low-latency，默认 zero-copy 适合大多数 UKey/串口/存储设备。
-        var result = await runner.RunAsync(
+        var result = await attachRunner.RunAsync(
             usbipPath,
             $"{BuildTcpPortOption(port)}attach -r {Quote(host)} -b {Quote(busId)} --once --receive-mode={receiveMode}",
             "client.attach",
@@ -106,7 +109,7 @@ public sealed class UsbipWinVhciClientBackend : IUsbIpClientBackend
 
     public async Task DetachAsync(int port, CancellationToken cancellationToken = default)
     {
-        await runner.RunAsync(
+        await commandRunner.RunAsync(
             usbipPath,
             $"detach -p {port.ToString(CultureInfo.InvariantCulture)}",
             "client.detach",
@@ -123,7 +126,7 @@ public sealed class UsbipWinVhciClientBackend : IUsbIpClientBackend
     {
         try
         {
-            var result = await runner.RunAsync(
+            var result = await commandRunner.RunAsync(
                 usbipPath,
                 "port",
                 "client.port.list",
