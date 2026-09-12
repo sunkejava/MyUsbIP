@@ -58,6 +58,8 @@ try
     }
     Write($"依赖校验通过: {package.FileName}");
 
+    StopExistingRuntime(role, Write);
+
     if (role == "server") InstallServer(baseDir, dependencyPath, Write);
     else InstallClient(baseDir, dependencyPath, Write);
 
@@ -75,13 +77,98 @@ catch (Exception ex)
     return 1;
 }
 
+static void StopExistingRuntime(string role, Action<string> write)
+{
+    write("检查并停止已运行的旧版本...");
+
+    if (string.Equals(role, "server", StringComparison.OrdinalIgnoreCase))
+    {
+        // 当前版本服务端由 SYSTEM 开机计划任务托管。升级前先结束任务，避免旧进程继续占用 EXE/DLL。
+        var task = RunCaptureArgs("schtasks.exe", "/Query", "/TN", "MyUsbIP USB-IP Server");
+        if (task.ExitCode == 0)
+        {
+            write("检测到 MyUsbIP 服务端计划任务，正在停止...");
+            RunArgs("schtasks.exe", "/End", "/TN", "MyUsbIP USB-IP Server");
+        }
+
+        // 兼容早期版本曾使用 SCM 注册服务的情况。不存在时 sc.exe 会返回非 0，直接忽略。
+        foreach (var serviceName in new[] { "MyUsbIP", "MyUsbIP.Server", "MyUsbIP USB-IP Server" })
+        {
+            var service = RunCaptureArgs("sc.exe", "query", serviceName);
+            if (service.ExitCode != 0) continue;
+            write($"检测到旧版 Windows 服务 {serviceName}，正在停止...");
+            RunArgs("sc.exe", "stop", serviceName);
+            WaitServiceStopped(serviceName, TimeSpan.FromSeconds(15));
+        }
+
+        KillProcesses(write, "myusbipd");
+    }
+    else
+    {
+        // 客户端目前没有常驻 SCM 服务，但升级时可能有 CLI/usbip.exe 正在运行并锁定安装目录。
+        foreach (var serviceName in new[] { "MyUsbIP.Client", "MyUsbIP Client" })
+        {
+            var service = RunCaptureArgs("sc.exe", "query", serviceName);
+            if (service.ExitCode != 0) continue;
+            write($"检测到客户端 Windows 服务 {serviceName}，正在停止...");
+            RunArgs("sc.exe", "stop", serviceName);
+            WaitServiceStopped(serviceName, TimeSpan.FromSeconds(15));
+        }
+
+        KillProcesses(write, "myusbip", "usbip");
+    }
+
+    // taskkill/sc stop 返回后文件句柄释放可能存在极短延迟，给内核和杀毒软件一点收尾时间。
+    Thread.Sleep(800);
+    write("旧版本运行实例已停止，可以执行覆盖升级。");
+}
+
+static void KillProcesses(Action<string> write, params string[] processNames)
+{
+    foreach (var name in processNames)
+    {
+        Process[] processes;
+        try { processes = Process.GetProcessesByName(name); }
+        catch { continue; }
+
+        foreach (var process in processes)
+        {
+            using (process)
+            {
+                try
+                {
+                    write($"停止进程 {process.ProcessName}.exe (PID={process.Id})...");
+                    process.Kill(entireProcessTree: true);
+                    if (!process.WaitForExit(10000))
+                        throw new InvalidOperationException($"进程 {process.ProcessName}.exe PID={process.Id} 在 10 秒内未退出。");
+                }
+                catch (ArgumentException)
+                {
+                    // 进程已自行退出。
+                }
+            }
+        }
+    }
+}
+
+static void WaitServiceStopped(string serviceName, TimeSpan timeout)
+{
+    var sw = Stopwatch.StartNew();
+    while (sw.Elapsed < timeout)
+    {
+        var state = RunCaptureArgs("sc.exe", "query", serviceName);
+        if (state.ExitCode != 0 || state.Output.Contains("STOPPED", StringComparison.OrdinalIgnoreCase)) return;
+        Thread.Sleep(500);
+    }
+}
+
 static void InstallServer(string baseDir, string dependencyPath, Action<string> write)
 {
     var installDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "MyUsbIP", "Server");
     var payload = Path.Combine(baseDir, "payload", "server");
     if (!Directory.Exists(payload)) throw new DirectoryNotFoundException($"缺少服务端程序目录: {payload}");
 
-    write("安装 UsbDk...");
+    write("安装/更新 UsbDk...");
     var msiLog = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "MyUsbIP", "InstallerLogs", "usbdk-msi.log");
     var code = RunArgs("msiexec.exe", "/i", dependencyPath, "/qn", "/norestart", "/l*v", msiLog);
     if (code is not (0 or 3010)) throw new InvalidOperationException($"UsbDk 安装失败，ExitCode={code}，日志={msiLog}");
@@ -106,8 +193,7 @@ static void InstallServer(string baseDir, string dependencyPath, Action<string> 
     var taskCommand = $"\"{daemon}\" \"{config}\"";
     EnsureSuccess(RunArgs("schtasks.exe", "/Create", "/TN", "MyUsbIP USB-IP Server", "/SC", "ONSTART", "/RU", "SYSTEM", "/RL", "HIGHEST", "/TR", taskCommand, "/F"), "创建开机任务");
 
-    write("启动 MyUsbIP 服务端...");
-    RunArgs("taskkill.exe", "/F", "/IM", "myusbipd.exe");
+    write("启动更新后的 MyUsbIP 服务端...");
     EnsureSuccess(RunArgs("schtasks.exe", "/Run", "/TN", "MyUsbIP USB-IP Server"), "启动服务端任务");
 
     write("执行服务端自检...");
@@ -132,7 +218,7 @@ static void InstallClient(string baseDir, string dependencyPath, Action<string> 
     var usbip = Directory.EnumerateFiles(usbipDir, "usbip.exe", SearchOption.AllDirectories).FirstOrDefault()
         ?? throw new FileNotFoundException("usbip-win 压缩包中未找到 usbip.exe。");
 
-    write("安装 usbip-win VHCI(UDE)...");
+    write("安装/更新 usbip-win VHCI(UDE)...");
     var result = RunCaptureArgs(usbip, "install", "-u");
     if (result.ExitCode != 0)
     {
@@ -197,9 +283,11 @@ static (int ExitCode, string Output) RunCaptureArgs(string fileName, params stri
 {
     using var process = Process.Start(CreateStart(fileName, true, args));
     if (process is null) return (-1, "进程启动失败");
-    var output = process.StandardOutput.ReadToEnd() + Environment.NewLine + process.StandardError.ReadToEnd();
+    var stdoutTask = process.StandardOutput.ReadToEndAsync();
+    var stderrTask = process.StandardError.ReadToEndAsync();
     process.WaitForExit();
-    return (process.ExitCode, output);
+    Task.WaitAll(stdoutTask, stderrTask);
+    return (process.ExitCode, stdoutTask.Result + Environment.NewLine + stderrTask.Result);
 }
 
 static void EnsureSuccess(int exitCode, string operation)
