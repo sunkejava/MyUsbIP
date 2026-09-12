@@ -19,21 +19,20 @@
       "notes": "下载地址已固定到官方 v1.00-22 Release。首次准备发布包时先执行 Install-Dependencies.ps1 -Role Server -PrepareHash，再把输出 SHA256 固定回本清单；生产安装仍拒绝空 SHA256。"
     },
     {
-      "id": "usbip-win-vhci-x64",
+      "id": "usbip-win2-x64",
       "role": "client",
       "enabled": true,
-      "version": "0.3.6-dev",
-      "fileName": "usbip-win-0.3.6-dev.zip",
-      "sourcePage": "https://github.com/cezanne/usbip-win/releases/tag/v0.3.6-dev",
-      "downloadUrl": "https://github.com/cezanne/usbip-win/releases/download/v0.3.6-dev/usbip-win-0.3.6-dev.zip",
-      "sha256": "",
-      "installType": "zip",
-      "extractTo": "dependencies/runtime/usbip-win",
-      "requiredFilesAfterExtract": [
-        "usbip.exe"
+      "version": "0.9.8.0",
+      "fileName": "USBip-0.9.8.0-x64.exe",
+      "sourcePage": "https://github.com/vadimgrn/usbip-win2/releases/tag/v.0.9.8.0",
+      "downloadUrl": "https://github.com/vadimgrn/usbip-win2/releases/download/v.0.9.8.0/USBip-0.9.8.0-x64.exe",
+      "sha256": "81f426741f7ee2ed991febe24a22daca8400b6ae2f171054e3fb404897e15d39",
+      "installType": "exe",
+      "requiredFilesAfterInstall": [
+        "C:\\Program Files\\USBip\\usbip.exe"
       ],
-      "license": "GPL-3.0",
-      "notes": "该上游 Release 的 VHCI(WDM/UDE)为 Microsoft attestation signed。正式发布前固定 SHA256，并保留 GPL-3.0 许可证及对应源码获取说明。"
+      "license": "BSD-2-Clause",
+      "notes": "使用 usbip-win2 0.9.8.0 x64 官方安装包。该版本 UDE/VHCI 在内核中维护 USB/IP 网络连接，port 可显示真实 host/port/busid/bus/dev/serial/mode；SHA256 来自 GitHub Release asset digest。"
     }
   ]
 }
