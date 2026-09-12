@@ -34,14 +34,13 @@ public static class DriverControlProtocol
 
     public const uint ApiVersion = 0x0001_0000;
 
-    /// <summary>将 UTF-8 字符串写入固定长度字段。</summary>
+    /// <summary>将 UTF-8 字符串写入固定长度字段，超长内容按字节安全截断。</summary>
     public static void WriteFixedUtf8(Span<byte> destination, string? value)
     {
         destination.Clear();
-        if (string.IsNullOrEmpty(value)) return;
-        var count = Encoding.UTF8.GetByteCount(value);
-        if (count >= destination.Length) count = destination.Length - 1;
-        Encoding.UTF8.GetBytes(value.AsSpan(), destination[..count]);
+        if (string.IsNullOrEmpty(value) || destination.Length == 0) return;
+        var bytes = Encoding.UTF8.GetBytes(value);
+        bytes.AsSpan(0, Math.Min(bytes.Length, destination.Length - 1)).CopyTo(destination);
     }
 
     /// <summary>读取驱动返回的固定长度 UTF-8 字段。</summary>
