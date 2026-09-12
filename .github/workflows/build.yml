@@ -26,6 +26,8 @@ jobs:
         run: dotnet restore MyUsbIP.slnx
       - name: Build
         run: dotnet build MyUsbIP.slnx -c Release --no-restore
+      - name: Smoke tests
+        run: dotnet run --project tests/MyUsbIP.SmokeTests/MyUsbIP.SmokeTests.csproj -c Release --no-build
       - name: Publish CLI
         run: dotnet publish tools/MyUsbIP.Cli/MyUsbIP.Cli.csproj -c Release -r ${{ matrix.rid }} --self-contained false -o artifacts/${{ matrix.rid }}/cli
       - name: Publish Daemon
