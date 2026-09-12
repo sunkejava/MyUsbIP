@@ -86,9 +86,8 @@ public static class UsbIpWire
     /// <summary>
     /// 写入标准 USB/IP usb_interface 记录。
     /// DEVLIST 中每个 usb_device 后必须紧跟 bNumInterfaces 个 4 字节 interface 记录；
-    /// 否则严格客户端（例如 usbip-win2）会继续读 interface 时遇到 EOF，导致 list 返回失败。
-    /// 当前公共设备模型尚未保存每个 interface 的独立 class/subclass/protocol，
-    /// 因此优先使用设备级 class 信息作为兼容回退；后续可扩展为真实逐接口元数据。
+    /// usbip-win2 会严格读取这些记录。优先输出真实接口 class/subclass/protocol，
+    /// 当描述符不可用时才回退到设备级 class 信息。
     /// </summary>
     private static async ValueTask WriteInterfacesAsync(Stream stream, UsbIpDeviceInfo device,
         CancellationToken cancellationToken = default)
@@ -99,9 +98,10 @@ public static class UsbIpWire
         for (var i = 0; i < device.InterfaceCount; i++)
         {
             var offset = i * InterfaceWireSize;
-            buffer[offset] = device.DeviceClass;
-            buffer[offset + 1] = device.DeviceSubClass;
-            buffer[offset + 2] = device.DeviceProtocol;
+            var info = i < device.Interfaces.Count ? device.Interfaces[i] : null;
+            buffer[offset] = info?.Class ?? device.DeviceClass;
+            buffer[offset + 1] = info?.SubClass ?? device.DeviceSubClass;
+            buffer[offset + 2] = info?.Protocol ?? device.DeviceProtocol;
             buffer[offset + 3] = 0;
         }
 
