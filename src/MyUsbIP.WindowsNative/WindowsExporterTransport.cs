@@ -48,14 +48,15 @@ public sealed class WindowsExporterTransport : IUsbIpExportTransport
         cancellationToken.ThrowIfCancellationRequested();
         var input = BuildSubmitRequest(request);
         using var device = new KernelDeviceClient(devicePath);
-        var output = device.Ioctl(DriverControlProtocol.IoctlExporterSubmitUrb, input, Math.Max(64, request.TransferBufferLength + 64));
+        var outputSize = Math.Max(64, Math.Max(0, request.TransferBufferLength) + 64);
+        var output = device.Ioctl(DriverControlProtocol.IoctlExporterSubmitUrb, input, outputSize);
         return Task.FromResult(ParseCompletion(request, output));
     }
 
     private static byte[] BuildSubmitRequest(UsbIpSubmitRequest request)
     {
         var payloadLength = request.Payload.Length;
-        var buffer = new byte[48 + payloadLength];
+        var buffer = new byte[44 + payloadLength];
         BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(0, 4), DriverControlProtocol.ApiVersion);
         BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(4, 4), request.Sequence);
         BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(8, 4), request.DeviceId);
@@ -80,7 +81,7 @@ public sealed class WindowsExporterTransport : IUsbIpExportTransport
         var actualLength = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(12, 4));
         var errorCount = BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(16, 4));
         var payloadLength = BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(20, 4));
-        if (payloadLength > data.Length - 24) throw new InvalidDataException("Exporter URB Payload 长度异常。 ");
+        if (payloadLength > (uint)(data.Length - 24)) throw new InvalidDataException("Exporter URB Payload 长度异常。 ");
         var payload = data.Slice(24, checked((int)payloadLength)).ToArray();
         return new UsbIpSubmitCompletion(sequence, request.DeviceId, request.Direction, request.Endpoint, status, actualLength, request.StartFrame, request.NumberOfPackets, checked((int)errorCount), payload);
     }
