@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/MyUsbIP.Abstractions/MyUsbIP.Abstractions.csproj" />
+    <ProjectReference Include="../../src/MyUsbIP.Server/MyUsbIP.Server.csproj" />
+    <ProjectReference Include="../../src/MyUsbIP.Platform/MyUsbIP.Platform.csproj" />
+  </ItemGroup>
+</Project>
