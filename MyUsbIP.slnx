@@ -5,6 +5,13 @@
     <Project Path="src/MyUsbIP.Server/MyUsbIP.Server.csproj" />
     <Project Path="src/MyUsbIP.Client/MyUsbIP.Client.csproj" />
     <Project Path="src/MyUsbIP.Platform/MyUsbIP.Platform.csproj" />
+    <Project Path="src/MyUsbIP.Runtime/MyUsbIP.Runtime.csproj" />
+  </Folder>
+  <Folder Name="/apps/">
+    <Project Path="apps/MyUsbIP.Daemon/MyUsbIP.Daemon.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/MyUsbIP.Cli/MyUsbIP.Cli.csproj" />
   </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/MyUsbIP.Server.Sample/MyUsbIP.Server.Sample.csproj" />
