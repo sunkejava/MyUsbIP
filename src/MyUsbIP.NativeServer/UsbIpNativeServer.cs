@@ -29,7 +29,7 @@ public interface IUsbDescriptorProvider
 
 /// <summary>
 /// MyUsbIP 自研 USB/IP TCP 服务。
-/// 不依赖 usbipd-win；直接实现 USB/IP DEVLIST / IMPORT / SUBMIT 数据路径，
+/// 不依赖 usbipd-win；直接实现 USB/IP DEVLIST / IMPORT / SUBMIT / UNLINK 数据路径，
 /// 并额外提供 UdeCx 所需的描述符预取扩展。
 /// </summary>
 public sealed class UsbIpNativeServer : IAsyncDisposable
@@ -40,11 +40,8 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
     private readonly CancellationTokenSource stopCts = new();
     private readonly List<Task> sessions = [];
 
-    public UsbIpNativeServer(
-        IUsbIpExportTransport transport,
-        IPAddress? address = null,
-        int port = UsbIpProtocolConstants.DefaultPort,
-        IUsbIpEventSink? eventSink = null)
+    public UsbIpNativeServer(IUsbIpExportTransport transport, IPAddress? address = null,
+        int port = UsbIpProtocolConstants.DefaultPort, IUsbIpEventSink? eventSink = null)
     {
         this.transport = transport ?? throw new ArgumentNullException(nameof(transport));
         this.eventSink = eventSink ?? NullUsbIpEventSink.Instance;
@@ -55,8 +52,8 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, stopCts.Token);
         listener.Start();
-        await eventSink.WriteAsync(new(DateTimeOffset.Now, "native.server.started", "Information", null, null, null, "MyUsbIP 原生 USB/IP 服务已启动"), linked.Token);
-
+        await eventSink.WriteAsync(new(DateTimeOffset.Now, "native.server.started", "Information", null, null, null,
+            "MyUsbIP 原生 USB/IP 服务已启动"), linked.Token);
         try
         {
             while (!linked.IsCancellationRequested)
@@ -67,13 +64,8 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
                 _ = task.ContinueWith(_ => { lock (sessions) sessions.Remove(task); }, TaskScheduler.Default);
             }
         }
-        catch (OperationCanceledException) when (linked.IsCancellationRequested)
-        {
-        }
-        finally
-        {
-            listener.Stop();
-        }
+        catch (OperationCanceledException) when (linked.IsCancellationRequested) { }
+        finally { listener.Stop(); }
     }
 
     public async ValueTask DisposeAsync()
@@ -107,7 +99,6 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
             {
                 if (transport is not IUsbDescriptorProvider descriptorProvider)
                     throw new NotSupportedException("当前 Exporter 未实现 USB 描述符查询。 ");
-
                 var busId = await UsbIpCodec.ReadBusIdAsync(stream, cancellationToken).ConfigureAwait(false);
                 var descriptors = await descriptorProvider.GetDescriptorSetAsync(busId, cancellationToken).ConfigureAwait(false);
                 await UsbDescriptorControlProtocol.WriteReplyAsync(stream, descriptors, cancellationToken).ConfigureAwait(false);
@@ -120,18 +111,19 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
             importedBusId = await UsbIpCodec.ReadBusIdAsync(stream, cancellationToken).ConfigureAwait(false);
             var device = await transport.FindAsync(importedBusId, cancellationToken).ConfigureAwait(false)
                          ?? throw new InvalidOperationException($"设备 {importedBusId} 不存在。 ");
-
             await transport.BeginSessionAsync(importedBusId, cancellationToken).ConfigureAwait(false);
             await UsbIpWire.WriteImportReplyAsync(stream, device, cancellationToken).ConfigureAwait(false);
             await PumpUrbAsync(stream, importedBusId, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or SocketException or EndOfStreamException or OperationCanceledException)
         {
-            await eventSink.WriteAsync(new(DateTimeOffset.Now, "native.session.closed", "Information", null, importedBusId, client.Client.RemoteEndPoint?.ToString(), ex.Message), CancellationToken.None);
+            await eventSink.WriteAsync(new(DateTimeOffset.Now, "native.session.closed", "Information", null,
+                importedBusId, client.Client.RemoteEndPoint?.ToString(), ex.Message), CancellationToken.None);
         }
         catch (Exception ex)
         {
-            await eventSink.WriteAsync(new(DateTimeOffset.Now, "native.session.failed", "Error", null, importedBusId, client.Client.RemoteEndPoint?.ToString(), ex.Message, Exception: ex), CancellationToken.None);
+            await eventSink.WriteAsync(new(DateTimeOffset.Now, "native.session.failed", "Error", null,
+                importedBusId, client.Client.RemoteEndPoint?.ToString(), ex.Message, Exception: ex), CancellationToken.None);
         }
         finally
         {
@@ -152,14 +144,28 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
             {
                 case UsbIpDataCommands.CmdSubmit:
                 {
-                    var request = await UsbIpWire.ReadSubmitAsync(stream, basic.Sequence, basic.DeviceId, basic.Direction, basic.Endpoint, cancellationToken).ConfigureAwait(false);
+                    var request = await UsbIpWire.ReadSubmitAsync(stream, basic.Sequence, basic.DeviceId,
+                        basic.Direction, basic.Endpoint, cancellationToken).ConfigureAwait(false);
                     var completion = await transport.SubmitAsync(busId, request, cancellationToken).ConfigureAwait(false);
                     await UsbIpWire.WriteSubmitCompletionAsync(stream, completion, cancellationToken).ConfigureAwait(false);
                     break;
                 }
                 case UsbIpDataCommands.CmdUnlink:
-                    await transport.CancelAsync(busId, basic.Sequence, cancellationToken).ConfigureAwait(false);
-                    throw new NotSupportedException("UNLINK 应答路径将在 Exporter 异步取消队列完成后接入。 ");
+                {
+                    var request = await UsbIpWire.ReadUnlinkAsync(stream, basic.Sequence, basic.DeviceId,
+                        basic.Direction, basic.Endpoint, cancellationToken).ConfigureAwait(false);
+                    var status = 0;
+                    try
+                    {
+                        await transport.CancelAsync(busId, request.TargetSequence, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        status = -1;
+                    }
+                    await UsbIpWire.WriteUnlinkCompletionAsync(stream, request, status, cancellationToken).ConfigureAwait(false);
+                    break;
+                }
                 default:
                     throw new InvalidDataException($"未知 USB/IP 数据命令 0x{basic.Command:X8}。 ");
             }
