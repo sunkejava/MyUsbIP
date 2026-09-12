@@ -70,6 +70,12 @@ async Task TestDeviceWireMetadataAsync()
 
 async Task TestDevListInterfacesAsync()
 {
+    var interfaceInfo = new UsbIpInterfaceInfo
+    {
+        Class = 0xFF,
+        SubClass = 0x01,
+        Protocol = 0x02,
+    };
     var device = new UsbIpDeviceInfo
     {
         BusId = "0000002F-00000004",
@@ -79,12 +85,13 @@ async Task TestDevListInterfacesAsync()
         Speed = 2,
         VendorId = 0x1A86,
         ProductId = 0x7523,
-        DeviceClass = 0xFF,
-        DeviceSubClass = 0x01,
-        DeviceProtocol = 0x02,
+        DeviceClass = 0x00,
+        DeviceSubClass = 0x00,
+        DeviceProtocol = 0x00,
         ConfigurationValue = 1,
         ConfigurationCount = 1,
         InterfaceCount = 1,
+        Interfaces = new[] { interfaceInfo },
         State = UsbIpDeviceState.Available,
     };
 
@@ -95,9 +102,9 @@ async Task TestDevListInterfacesAsync()
     Assert(bytes.Length == expectedLength, "DEVLIST 未按 bNumInterfaces 写入 usb_interface 记录");
 
     var interfaceOffset = UsbIpCodec.OperationHeaderSize + 4 + UsbIpWire.DeviceWireSize;
-    Assert(bytes[interfaceOffset] == device.DeviceClass, "DEVLIST interface class 写入错误");
-    Assert(bytes[interfaceOffset + 1] == device.DeviceSubClass, "DEVLIST interface subclass 写入错误");
-    Assert(bytes[interfaceOffset + 2] == device.DeviceProtocol, "DEVLIST interface protocol 写入错误");
+    Assert(bytes[interfaceOffset] == interfaceInfo.Class, "DEVLIST interface class 未使用真实接口元数据");
+    Assert(bytes[interfaceOffset + 1] == interfaceInfo.SubClass, "DEVLIST interface subclass 未使用真实接口元数据");
+    Assert(bytes[interfaceOffset + 2] == interfaceInfo.Protocol, "DEVLIST interface protocol 未使用真实接口元数据");
     Assert(bytes[interfaceOffset + 3] == 0, "DEVLIST interface padding 写入错误");
 }
 
@@ -126,6 +133,10 @@ async Task TestDeviceStatusProtocolAsync()
         ConfigurationValue = 1,
         ConfigurationCount = 1,
         InterfaceCount = 1,
+        Interfaces = new[]
+        {
+            new UsbIpInterfaceInfo { Class = 0xFF, SubClass = 0x01, Protocol = 0x02 },
+        },
     };
 
     await using var stream = new MemoryStream();
@@ -140,6 +151,8 @@ async Task TestDeviceStatusProtocolAsync()
         Assert(actual[0].SessionId == expected.SessionId, "设备状态扩展协议 SessionId 丢失");
         Assert(actual[0].Manufacturer == expected.Manufacturer, "设备状态扩展协议厂商信息丢失");
         Assert(actual[0].SerialNumber == expected.SerialNumber, "设备状态扩展协议序列号丢失");
+        Assert(actual[0].Interfaces.Count == 1 && actual[0].Interfaces[0].Class == 0xFF,
+            "设备状态扩展协议逐接口元数据丢失");
     }
 }
 
