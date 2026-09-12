@@ -1,286 +1,389 @@
 # MyUsbIP
 
-基于 **.NET 10** 封装的跨平台 USB/IP 服务端/客户端类库，用统一 API 管理 USB 设备网络共享，目标是在业务系统中逐步替代 VirtualHere。
+基于 **.NET 10 + 标准 USB/IP** 的跨平台 USB 网络共享封装，目标是为 Windows/Linux 提供一套可维护、可诊断、可自动恢复的 VirtualHere 替代方案。
 
-> 当前阶段重点是：统一 .NET API、Windows/Linux 平台适配、超时与异常恢复、结构化日志、链路 TraceId、指标埋点。底层 USB 虚拟总线仍复用各平台成熟的 USB/IP 驱动/工具链，避免在第一阶段重复实现高风险内核驱动。
+> 当前版本：**v1.0.0**
 
-## 设计参考
+## 1. v1.0 能做什么
 
-项目设计参考以下实现的架构思想与 USB/IP 协议行为，但 MyUsbIP 代码为独立封装：
+- Windows / Linux 服务端统一 API。
+- Windows / Linux 客户端统一 API。
+- 本机 USB 设备枚举。
+- Share / Unshare。
+- 远端 USB/IP 设备枚举。
+- Attach / Detach。
+- 跨平台设备热插拔监控。
+- VID/PID/序列号/BusId 前缀自动共享。
+- 客户端受管连接与掉线恢复。
+- 操作超时与卡死进程树终止。
+- Activity / TraceId 全链路诊断。
+- `System.Diagnostics.Metrics` 指标。
+- JSON Lines 文件日志。
+- 内存事件缓存，方便后续管理页面实时展示。
+- `myusbip` 跨平台 CLI。
+- `myusbipd` 长期运行守护进程。
+- Windows/Linux GitHub Actions 编译和发布产物。
 
-- `sunkejava/usbipdcpp`：参考其 `Server / Session / UsbDevice / DeviceHandler` 的清晰分层及异步 I/O 思路。
-- `sunkejava/usbipd-win`：参考 Windows USB/IP 服务、设备生命周期和驱动交互方式。
+## 2. 重要边界
 
-第三方项目、驱动和命令行工具仍受它们各自许可证约束；不要把第三方二进制文件直接当作 MyUsbIP 自有组件重新分发。
+MyUsbIP 的托管层全部使用 .NET 10，但 **Windows 客户端将远端设备映射成本机 USB 设备仍然必须依赖虚拟 USB Host Controller/VHCI 内核驱动**。
 
-## 当前架构
+v1.0 默认组合：
 
-```text
-业务系统
-  ├─ IMyUsbIpServer
-  │    └─ MyUsbIpServer
-  │          └─ IUsbIpServerBackend
-  │                ├─ WindowsUsbIpBackend -> usbipd-win
-  │                └─ LinuxUsbIpBackend   -> usbip_host / usbip
-  │
-  └─ IMyUsbIpClient
-       └─ MyUsbIpClient
-             └─ IUsbIpClientBackend
-                   ├─ WindowsUsbIpBackend -> usbip-win / VHCI
-                   └─ LinuxUsbIpBackend   -> vhci_hcd / usbip
+| 平台 | 服务端 | 客户端 |
+|---|---|---|
+| Windows | usbipd-win | usbip-win/VHCI 或兼容驱动 |
+| Linux | usbip_host + usbip | vhci_hcd + usbip |
 
-公共层
-  ├─ MyUsbIP.Abstractions  设备模型、接口、诊断模型
-  ├─ MyUsbIP.Protocol      USB/IP 网络协议编解码基础
-  └─ MyUsbIP.Platform      Windows/Linux 平台后端
-```
+MyUsbIP 把这些依赖全部隔离在 `MyUsbIP.Platform`。以后改成自己的 KMDF 虚拟总线驱动，只需要实现 `IUsbIpServerBackend` / `IUsbIpClientBackend`，业务层不用重写。
 
-这样设计的目的，是让上层业务永远不依赖某一个驱动。后续将 Windows 后端从命令行替换成驱动 IOCTL/PInvoke，或增加自研 VHCI 驱动时，上层代码无需修改。
+这也是本项目与“直接在业务代码里启动 usbipd.exe”的主要区别。
 
-## 支持情况
-
-| 系统 | 服务端共享物理 USB | 客户端映射远程 USB | 当前底层 |
-|---|---:|---:|---|
-| Windows 10/11 | ✅ | ✅ | 服务端 usbipd-win；客户端 usbip-win/VHCI |
-| Linux | ✅ | ✅ | usbip_host + vhci_hcd + usbip 工具 |
-| macOS | ⏳ | ⏳ | 已预留 Backend 接口 |
-
-> USB/IP 默认 TCP 端口为 `3240`。生产环境不要直接把 3240 暴露到公网，建议通过内网、VPN、Tailscale/WireGuard 等可信网络使用，并在业务层增加设备授权。
-
-## 项目结构
+## 3. 项目结构
 
 ```text
-src/
-  MyUsbIP.Abstractions/   # 公共接口、模型、诊断
-  MyUsbIP.Protocol/       # USB/IP 网络字节序、公共协议头、BusId 编解码
-  MyUsbIP.Server/         # 服务端类库
-  MyUsbIP.Client/         # 客户端类库
-  MyUsbIP.Platform/       # Windows/Linux 平台实现
-samples/
-  MyUsbIP.Server.Sample/  # 服务端调用示例
-  MyUsbIP.Client.Sample/  # 客户端调用示例
+MyUsbIP
+├─ src
+│  ├─ MyUsbIP.Abstractions   公共模型、接口、日志接收器
+│  ├─ MyUsbIP.Protocol       USB/IP 协议基础编解码
+│  ├─ MyUsbIP.Server         服务端门面
+│  ├─ MyUsbIP.Client         客户端门面
+│  ├─ MyUsbIP.Platform       Windows/Linux 平台后端
+│  └─ MyUsbIP.Runtime        热插拔、自动共享、自动恢复、健康检查
+├─ apps
+│  └─ MyUsbIP.Daemon         长期运行守护进程 myusbipd
+├─ tools
+│  └─ MyUsbIP.Cli            管理工具 myusbip
+├─ samples
+│  ├─ MyUsbIP.Server.Sample
+│  └─ MyUsbIP.Client.Sample
+└─ docs
+   ├─ ARCHITECTURE.md
+   ├─ DEPLOYMENT.md
+   └─ TROUBLESHOOTING.md
 ```
 
-## 构建
+## 4. 最简单的类库使用方式
 
-需要 .NET 10 SDK：
-
-```bash
-dotnet build MyUsbIP.slnx -c Release
-```
-
-## Windows 服务端部署
-
-### 前置条件
-
-1. 安装可用的 `usbipd-win`，确保 `usbipd.exe` 在 PATH 中，或实例化 `WindowsUsbIpBackend` 时传入完整路径。
-2. `usbipd` 服务应处于运行状态。
-3. 防火墙允许可信网段访问 TCP 3240。
-4. 共享/取消共享设备通常需要管理员权限。
-
-### 类库调用
+### 服务端
 
 ```csharp
 using MyUsbIP.Abstractions;
 using MyUsbIP.Platform;
 using MyUsbIP.Server;
 
-IUsbIpServerBackend backend = new WindowsUsbIpBackend();
-IMyUsbIpServer server = new MyUsbIpServer(backend);
+var backendObject = UsbIpBackendFactory.CreateDefault();
+var backend = (IUsbIpServerBackend)backendObject;
+var server = new MyUsbIpServer(backend);
 
 var devices = await server.GetDevicesAsync();
 foreach (var device in devices)
 {
-    Console.WriteLine($"{device.BusId} {device.VidPid} {device.Product} {device.State}");
+    Console.WriteLine($"{device.BusId} {device.VidPid} {device.Product}");
 }
 
-await server.ShareAsync("1-3");
-// await server.UnshareAsync("1-3");
+await server.ShareAsync("2-3");
 ```
 
-## Linux 服务端部署
-
-不同发行版的软件包名称可能不同，核心要求是内核 USB/IP 支持和 `usbip` 命令可用。
-
-典型准备流程：
-
-```bash
-sudo modprobe usbip_core
-sudo modprobe usbip_host
-sudo usbipd -D
-usbip list -l
-```
-
-.NET 调用：
-
-```csharp
-IUsbIpServerBackend backend = new LinuxUsbIpBackend();
-IMyUsbIpServer server = new MyUsbIpServer(backend);
-
-var devices = await server.GetDevicesAsync();
-await server.ShareAsync("1-2");
-```
-
-Linux 下绑定 USB 设备一般需要 root 或相应 udev/capability 权限。
-
-## Windows 客户端部署
-
-Windows 客户端需要能够提供虚拟 USB Host Controller 的 USB/IP 客户端驱动，例如 `usbip-win/VHCI`，并确保其 `usbip.exe` 可用。
+### 客户端
 
 ```csharp
 using MyUsbIP.Abstractions;
 using MyUsbIP.Client;
 using MyUsbIP.Platform;
 
-IUsbIpClientBackend backend = new WindowsUsbIpBackend();
-IMyUsbIpClient client = new MyUsbIpClient(backend);
+var backendObject = UsbIpBackendFactory.CreateDefault();
+var backend = (IUsbIpClientBackend)backendObject;
+var client = new MyUsbIpClient(backend);
 
-var devices = await client.GetRemoteDevicesAsync("192.168.1.20");
-var result = await client.AttachAsync("192.168.1.20", "1-3");
-Console.WriteLine(result.Success);
+var devices = await client.GetRemoteDevicesAsync("192.168.1.100");
+var result = await client.AttachAsync("192.168.1.100", "2-3");
+
+Console.WriteLine(result.Message);
 ```
 
-挂载成功后，Windows 应通过 VHCI 把远端设备重新枚举为本地 USB 设备；之后上层软件按照本地 USB 设备使用，不需要理解网络转发过程。
-
-## Linux 客户端部署
-
-```bash
-sudo modprobe vhci_hcd
-usbip list -r 192.168.1.20
-sudo usbip attach -r 192.168.1.20 -b 1-3
-usbip port
-```
-
-对应 .NET：
+## 5. 加入诊断日志
 
 ```csharp
-IUsbIpClientBackend backend = new LinuxUsbIpBackend();
-IMyUsbIpClient client = new MyUsbIpClient(backend);
+await using var fileSink = new JsonLinesUsbIpEventSink("logs/myusbip.jsonl");
+var memorySink = new MemoryUsbIpEventSink(1000);
+var sink = new CompositeUsbIpEventSink(fileSink, memorySink);
 
-var devices = await client.GetRemoteDevicesAsync("192.168.1.20");
-await client.AttachAsync("192.168.1.20", "1-3");
+var backendObject = UsbIpBackendFactory.CreateDefault(
+    sink,
+    TimeSpan.FromSeconds(15));
+
+var server = new MyUsbIpServer((IUsbIpServerBackend)backendObject, sink);
+var client = new MyUsbIpClient((IUsbIpClientBackend)backendObject, sink);
 ```
 
-## 日志、链路追踪与监控
+所有底层平台命令都有超时保护。命令超时后会终止整个子进程树，避免 usbip/usbipd/驱动异常把上层业务永久卡住。
 
-MyUsbIP 从第一版就把排障作为核心能力。
-
-### 结构化事件
-
-实现 `IUsbIpEventSink` 即可接入你自己的日志系统：
+## 6. 设备热插拔
 
 ```csharp
-public sealed class MyEventSink : IUsbIpEventSink
+var monitor = new UsbIpDeviceMonitor(server, sink);
+
+await foreach (var change in monitor.WatchAsync())
 {
-    public ValueTask WriteAsync(UsbIpEvent evt, CancellationToken cancellationToken = default)
-    {
-        // 可写入 Serilog、SQLite、Elastic、MQTT、Prometheus 告警系统等。
-        Console.WriteLine($"{evt.TraceId} {evt.EventName} {evt.BusId} {evt.Message}");
-        return ValueTask.CompletedTask;
-    }
+    Console.WriteLine($"{change.Kind}: {change.Device.BusId} {change.Device.VidPid}");
 }
 ```
 
-当前主要事件包括：
+v1.0 使用跨平台设备快照差异实现统一行为。后续可以增加 Windows PnP/SetupAPI 与 Linux udev 原生事件后端，上层 API 无需改变。
 
-- `server.device.list.start/success/failed`
-- `server.device.share.start/success/failed`
-- `server.device.unshare.start/success/failed`
-- `client.remote.list.start/success/failed`
-- `client.attach.start/success/failed`
-- `client.detach.start/success/failed`
-- `process.start/process.end`
-
-每次操作自动创建 `System.Diagnostics.Activity`，事件携带 `TraceId`，后续可以把“业务连接请求 -> Hub 上电 -> USB 枚举 -> Share -> Client Attach -> VHCI 枚举”全部串成一条链路。
-
-### Metrics
-
-`UsbIpDiagnostics` 使用 .NET 原生 `System.Diagnostics.Metrics`，已经预留：
-
-- `myusbip.operations`
-- `myusbip.failures`
-- `myusbip.operation.duration`
-- `myusbip.network.bytes.sent`
-- `myusbip.network.bytes.received`
-- `myusbip.connections.active`
-
-可直接通过 OpenTelemetry 导出到 Prometheus/Grafana。
-
-### 防止底层命令卡死
-
-所有平台命令默认都有 10 秒超时：
-
-- 支持外部 `CancellationToken`；
-- 超时后终止整个进程树；
-- 记录命令开始、结束、耗时和失败信息；
-- 不允许 `usbip/usbipd` 的异常永久卡住业务线程。
-
-可自定义：
+## 7. 自动共享 UKey
 
 ```csharp
-var backend = new WindowsUsbIpBackend(
-    usbipdPath: @"C:\Program Files\usbipd-win\usbipd.exe",
-    usbipPath: @"C:\usbip-win\usbip.exe",
-    eventSink: sink,
-    commandTimeout: TimeSpan.FromSeconds(5));
+var monitor = new UsbIpDeviceMonitor(server, sink);
+var autoShare = new UsbIpAutoShareService(server, monitor, sink);
+
+await autoShare.RunAsync([
+    new UsbIpAutoShareRule
+    {
+        VendorId = 0x096E,
+        ProductId = 0x0303,
+    }
+], cancellationToken: stoppingToken);
 ```
 
-## 与 VirtualHere 的差异
+还可以按：
 
-VirtualHere 是完整商业产品，包含自有 Windows/Linux USB 捕获与虚拟总线实现。MyUsbIP 当前阶段的定位是：
+- VID
+- PID
+- SerialNumber
+- BusIdPrefix
 
-1. 用 .NET 10 提供你可控、易读、带中文注释的统一 SDK；
-2. 把 Windows/Linux 已成熟的 USB/IP 驱动隐藏在 Backend 后；
-3. 先解决你当前最需要的设备共享、远程挂载、状态管理和故障链路监控；
-4. 后续逐步把命令行 Backend 替换成原生 API/IOCTL，实现更低延迟、更完整状态和更好的异常恢复。
+组合匹配。
 
-## 后续规划
+## 8. 客户端自动恢复
 
-### v0.2：稳定性与自动恢复
+```csharp
+var manager = new UsbIpConnectionManager(client, sink);
 
-- 设备热插拔事件；
-- 设备 InstanceId/VID/PID/序列号与 BusId 稳定映射；
-- Share/Attach 幂等；
-- 断线检测与可配置自动重连；
-- 连接状态机；
-- Windows PnP/SetupAPI 诊断；
-- Linux sysfs/udev 诊断；
-- 按设备、端口、客户端 IP 的连接历史。
+await manager.ConnectAsync("192.168.1.100", "2-3");
 
-### v0.3：服务化
+await manager.RunRecoveryLoopAsync(new UsbIpReconnectOptions
+{
+    Enabled = true,
+    CheckInterval = TimeSpan.FromSeconds(5),
+    RetryDelay = TimeSpan.FromSeconds(3),
+}, stoppingToken);
+```
 
-- Windows Service / systemd Worker；
-- ASP.NET Core 管理 API；
-- 设备授权与租约；
-- JWT/mTLS；
-- SignalR/MQTT 状态推送；
-- Prometheus `/metrics`；
-- 健康检查与诊断快照。
+当远端设备临时消失后再次出现，连接管理器会重新尝试 Attach，并记录：
 
-### v0.4：原生驱动接口
+- `connection.remote.missing`
+- `connection.health.failed`
+- `connection.recovered`
+- `connection.recovery.stopped`
 
-- Windows 后端由启动命令改为直接驱动 IOCTL；
-- Linux 后端直接读取 sysfs 并控制 usbip 内核接口；
-- 客户端 VHCI 状态直接读取；
-- URB/端点级别统计与慢请求分析。
+## 9. CLI
 
-### v1.0：完整替代方案
+```text
+myusbip server list
+myusbip server share 2-3
+myusbip server unshare 2-3
+myusbip server watch
+myusbip server diag
 
-- 自研/可控 Windows 虚拟 USB 总线适配层；
-- 服务端/客户端安装包；
-- 自动驱动检测与修复；
-- UKey/智能卡/CH340/U盘等兼容性矩阵；
-- 多 Hub、大量设备并发、租约和权限控制。
+myusbip client list 192.168.1.100
+myusbip client attach 192.168.1.100 2-3
+myusbip client detach 0
+myusbip client diag
 
-## 特别说明：UKey/智能卡
+myusbip diag
+```
 
-USB/IP 能否稳定转发某个 UKey，不只取决于 TCP。需要同时关注：
+## 10. 守护进程
 
-- 设备是否为复合设备；
-- CCID/WUDF 驱动行为；
-- 是否包含特殊等时/中断端点；
-- 设备驱动是否依赖物理拓扑/序列号；
-- 网络抖动和 URB 超时；
-- 客户端虚拟总线驱动兼容性。
+`myusbipd` 用于 7x24 小时运行。
 
-因此后续会针对你常用的 `096E:0303/0312`、FT ePass、CH340 等设备增加专项诊断事件和兼容性测试。
+默认 `appsettings.json`：
+
+```json
+{
+  "LogDirectory": "logs",
+  "CommandTimeoutSeconds": 15,
+  "MonitorIntervalSeconds": 2,
+  "AutoShareRules": [
+    {
+      "VendorId": "096E",
+      "ProductId": "0303",
+      "Enabled": true
+    }
+  ],
+  "ManagedConnections": [
+    {
+      "Host": "192.168.1.100",
+      "BusId": "2-3",
+      "Port": 3240,
+      "Enabled": true
+    }
+  ],
+  "Reconnect": {
+    "Enabled": true,
+    "CheckIntervalSeconds": 5,
+    "RetryDelaySeconds": 3,
+    "MaxConsecutiveFailures": 0
+  }
+}
+```
+
+启动：
+
+```text
+myusbipd appsettings.json
+```
+
+## 11. 健康检查
+
+```csharp
+var diagnostics = new UsbIpDiagnosticsService(
+    (IUsbIpServerBackend)backendObject,
+    (IUsbIpClientBackend)backendObject,
+    sink);
+
+var serverReport = await diagnostics.CheckServerAsync();
+var clientReport = await diagnostics.CheckClientAsync();
+```
+
+健康检查用于快速定位：
+
+- usbip/usbipd 是否可执行。
+- 服务端是否能枚举 USB。
+- 后端是否具备 Share 能力。
+- 客户端是否具备 Attach/Detach 能力。
+- VHCI/内核模块缺失等问题。
+
+## 12. 日志与指标
+
+关键事件：
+
+```text
+server.device.list.*
+server.device.share.*
+server.device.unshare.*
+client.remote.list.*
+client.attach.*
+client.detach.*
+device.added
+device.removed
+device.changed
+autoshare.*
+connection.*
+diagnostics.*
+process.start
+process.end
+```
+
+指标：
+
+```text
+myusbip.operations
+myusbip.failures
+myusbip.operation.duration
+myusbip.network.bytes.sent
+myusbip.network.bytes.received
+myusbip.connections.active
+```
+
+建议生产环境按 TraceId 聚合同一次连接行为的完整日志。
+
+## 13. Windows 部署
+
+服务端：
+
+```bat
+usbipd list
+myusbip server list
+myusbip server share 2-3
+```
+
+客户端：
+
+```bat
+myusbip client list 192.168.1.100
+myusbip client attach 192.168.1.100 2-3
+```
+
+需要管理员权限。
+
+## 14. Linux 部署
+
+服务端：
+
+```bash
+sudo modprobe usbip_host
+sudo myusbip server list
+sudo myusbip server share 1-2
+```
+
+客户端：
+
+```bash
+sudo modprobe vhci_hcd
+sudo myusbip client list 192.168.1.100
+sudo myusbip client attach 192.168.1.100 1-2
+```
+
+## 15. 安全说明
+
+USB/IP 3240 是设备传输协议，不建议直接暴露到公网。
+
+推荐：
+
+- 内网 ACL
+- WireGuard
+- Tailscale
+- ZeroTier
+- IPSec
+- 专用 VPN
+
+MyUsbIP 不修改标准 USB/IP 数据协议去加入私有认证字段，避免失去 Linux/Windows 标准 USB/IP 互操作性。
+
+## 16. 与 VirtualHere 的对应关系
+
+| VirtualHere | MyUsbIP v1.0 |
+|---|---|
+| USB Server | usbipd-win / usbip_host + MyUsbIP Server |
+| USB Client | VHCI + MyUsbIP Client |
+| LIST | `GetDevicesAsync` / `GetRemoteDevicesAsync` |
+| USE/BIND | `ShareAsync` + `AttachAsync` |
+| STOP USING | `DetachAsync` |
+| 自动发现 | `UsbIpDeviceMonitor` |
+| 自动共享 | `UsbIpAutoShareService` |
+| 自动恢复 | `UsbIpConnectionManager` |
+| 日志 | TraceId + JSONL + Metrics |
+| CLI | `myusbip` |
+| 长期服务 | `myusbipd` |
+
+## 17. 后续自研驱动
+
+如果最终目标是彻底不依赖 usbipd-win / usbip-win，可继续实现：
+
+```text
+MyUsbIP.Platform.Windows.NativeServerBackend
+MyUsbIP.Platform.Windows.NativeVhciBackend
+```
+
+内部使用：
+
+- SetupAPI
+- cfgmgr32
+- CreateFile
+- DeviceIoControl
+- KMDF 虚拟 USB 总线/VHCI 驱动
+
+上层 API、守护进程、日志、自动恢复全部可以保持不变。
+
+## 18. 文档
+
+- `docs/ARCHITECTURE.md`：整体架构与驱动边界。
+- `docs/DEPLOYMENT.md`：Windows/Linux 部署。
+- `docs/TROUBLESHOOTING.md`：连接链路及 UKey/CH340 排障。
+- `CHANGELOG.md`：版本变更。
+
+## License
+
+本项目自身代码请按仓库最终 LICENSE 使用。引用或部署 usbipd-win、usbip-win、Linux USB/IP 时，请分别遵守对应上游项目许可证。
