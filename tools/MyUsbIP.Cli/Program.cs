@@ -34,7 +34,12 @@ var attachTimeout = TimeSpan.FromSeconds(Math.Max(config.CommandTimeoutSeconds, 
 var backendObject = UsbIpBackendFactory.CreateDefault(sink, timeout);
 var serverBackend = (IUsbIpServerBackend)backendObject;
 IUsbIpClientBackend clientBackend = OperatingSystem.IsWindows()
-    ? new UsbipWinVhciClientBackend(config.UsbipWinPath, sink, attachTimeout, config.ReceiveMode)
+    ? new UsbipWinVhciClientBackend(
+        usbipPath: config.UsbipWinPath,
+        eventSink: sink,
+        commandTimeout: timeout,
+        attachTimeout: attachTimeout,
+        receiveMode: config.ReceiveMode)
     : (IUsbIpClientBackend)backendObject;
 
 var server = new MyUsbIpServer(serverBackend, sink);
