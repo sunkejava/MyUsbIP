@@ -1,0 +1,91 @@
+using System.Collections.Concurrent;
+using System.Text.Json;
+
+namespace MyUsbIP.Abstractions;
+
+/// <summary>
+/// 将 USB/IP 结构化事件按 JSON Lines 方式写入文件。
+/// 每行一个完整 JSON，方便后期使用 PowerShell、jq、ELK、Loki 等工具分析。
+/// </summary>
+public sealed class JsonLinesUsbIpEventSink : IUsbIpEventSink, IAsyncDisposable
+{
+    private readonly SemaphoreSlim gate = new(1, 1);
+    private readonly StreamWriter writer;
+    private readonly JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+
+    public JsonLinesUsbIpEventSink(string filePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        var fullPath = Path.GetFullPath(filePath);
+        Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+        writer = new StreamWriter(new FileStream(fullPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite, 4096, FileOptions.Asynchronous))
+        {
+            AutoFlush = true,
+        };
+    }
+
+    public async ValueTask WriteAsync(UsbIpEvent evt, CancellationToken cancellationToken = default)
+    {
+        var json = JsonSerializer.Serialize(evt, jsonOptions);
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await writer.WriteLineAsync(json.AsMemory(), cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await writer.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            gate.Release();
+            gate.Dispose();
+        }
+    }
+}
+
+/// <summary>同时把同一事件发送给多个接收器。</summary>
+public sealed class CompositeUsbIpEventSink(params IUsbIpEventSink[] sinks) : IUsbIpEventSink
+{
+    private readonly IReadOnlyList<IUsbIpEventSink> sinks = sinks ?? [];
+
+    public async ValueTask WriteAsync(UsbIpEvent evt, CancellationToken cancellationToken = default)
+    {
+        foreach (var sink in sinks)
+        {
+            try
+            {
+                await sink.WriteAsync(evt, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                // 日志接收器故障不能反向阻塞 USB 主链路。
+            }
+        }
+    }
+}
+
+/// <summary>保留最近若干条事件，适合管理页面实时查看。</summary>
+public sealed class MemoryUsbIpEventSink(int capacity = 1000) : IUsbIpEventSink
+{
+    private readonly ConcurrentQueue<UsbIpEvent> events = new();
+    private readonly int capacity = Math.Max(1, capacity);
+
+    public IReadOnlyList<UsbIpEvent> Snapshot() => events.ToArray();
+
+    public ValueTask WriteAsync(UsbIpEvent evt, CancellationToken cancellationToken = default)
+    {
+        events.Enqueue(evt);
+        while (events.Count > capacity) events.TryDequeue(out _);
+        return ValueTask.CompletedTask;
+    }
+}
