@@ -176,9 +176,10 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
             _ = uint.TryParse(parts[1], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out deviceNumber);
         }
 
+        var interfaces = descriptor.InterfaceItems ?? Array.Empty<UsbIpInterfaceInfo>();
         var interfaceCount = descriptor.InterfaceCount;
-        if (interfaceCount == 0 && descriptor.Interfaces.Count > 0)
-            interfaceCount = checked((byte)Math.Min(byte.MaxValue, descriptor.Interfaces.Count));
+        if (interfaceCount == 0 && interfaces.Count > 0)
+            interfaceCount = checked((byte)Math.Min(byte.MaxValue, interfaces.Count));
 
         return device with
         {
@@ -195,7 +196,7 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
             ConfigurationCount = descriptor.ConfigurationCount == 0 ? (byte)1 : descriptor.ConfigurationCount,
             ConfigurationValue = descriptor.ConfigurationValue == 0 ? (byte)1 : descriptor.ConfigurationValue,
             InterfaceCount = interfaceCount,
-            Interfaces = descriptor.Interfaces,
+            Interfaces = interfaces,
         };
     }
 
@@ -208,10 +209,7 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
         byte ConfigurationCount,
         byte ConfigurationValue,
         byte InterfaceCount,
-        IReadOnlyList<UsbIpInterfaceInfo> Interfaces)
-    {
-        public IReadOnlyList<UsbIpInterfaceInfo> Interfaces { get; init; } = Interfaces ?? Array.Empty<UsbIpInterfaceInfo>();
-    }
+        IReadOnlyList<UsbIpInterfaceInfo>? InterfaceItems);
 
     /// <summary>
     /// UsbDk Speed：1=Low、2=Full、3=High、4=Super；
