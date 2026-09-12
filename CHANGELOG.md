@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.1.4
+
+针对 Windows 客户端覆盖升级时重复安装 VHCI、`myusbip client attach` 15 秒超时，以及 CH340 Detach 后无法再次枚举/连接的问题进行修复。
+
+- 客户端安装器新增 VHCI/UDE 健康检测：现有 `usbip.exe port` 正常时直接复用已安装驱动，不再每次覆盖升级都重复执行 `usbip install`；仅首次安装或驱动自检失败时才安装/修复 VHCI。
+- 客户端命令超时拆分：普通 list/port/detach 默认继续使用 `CommandTimeoutSeconds=15`，Attach 使用独立 `AttachTimeoutSeconds=120`，避免服务端 UsbDk Redirect 较慢时被客户端过早终止。
+- 客户端超时诊断进一步保留命令、stdout/stderr、耗时等结构化日志，便于区分 VHCI、本地 CLI 与服务端 IMPORT/Redirect 阶段。
+- 修正 CH340 等 USB 串口设备的 UsbDk 生命周期策略：USB/IP Detach 后不再执行 `UsbDk_StopRedirect -> UsbDk_StartRedirect` 循环，改为保留 Redirect 句柄至服务端生命周期结束。
+- USB/IP 会话结束时先无条件释放 BUSID 会话所有权，再执行 `UsbDk_ResetDevice` 清理设备状态，防止 Reset 异常导致设备永久处于 Busy。
+- 第一次 IMPORT 成功创建 Redirect 后不立即 ResetDevice，减少首次枚举额外扰动；Reset 仅用于会话结束清理。
+- 服务端 DEVLIST 现在合并 UsbDk 当前枚举结果与已 Redirect 设备快照；即使设备在 `UsbDk_GetDevicesList` 中暂时消失，仍可继续对客户端显示。
+- 已 Redirect 设备缓存 DeviceDescriptor、ConfigurationDescriptor、Endpoint 类型及 UsbDk 标识，后续再次 Attach 不再依赖设备重新出现在 UsbDk 原生枚举列表。
+- 继续保持同一 BUSID 单活动 USB/IP 会话约束，并修复会话结束后旧锁未正确释放导致 `native.import.rejected` 的场景。
+- Windows/Linux Build 与 Smoke tests 已通过后进入正式 v1.1.4 发布流程。
+
 ## 1.1.3
 
 针对 CH340 `1A86:7523` 首次远程 Attach/串口收发正常、Detach 后第二次 Attach 失败的问题，修正 UsbDk 会话清理，并完善服务端/客户端可持久化诊断日志。
