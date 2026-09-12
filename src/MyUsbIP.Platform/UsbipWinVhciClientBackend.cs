@@ -20,7 +20,7 @@ public sealed class UsbipWinVhciClientBackend : IUsbIpClientBackend
         IUsbIpEventSink? eventSink = null,
         TimeSpan? commandTimeout = null)
     {
-        this.usbipPath = usbipPath;
+        this.usbipPath = ResolveUsbipPath(usbipPath);
         runner = new UsbIpProcessRunner(
             eventSink ?? NullUsbIpEventSink.Instance,
             commandTimeout ?? TimeSpan.FromSeconds(30));
@@ -78,8 +78,8 @@ public sealed class UsbipWinVhciClientBackend : IUsbIpClientBackend
         int port = 3240,
         CancellationToken cancellationToken = default)
     {
-        // --once：只进行本次 Attach，不让 usbip-win2 在服务端暂时不可达时后台永久重试。
-        // -t 是 usbip-win2 的全局 TCP 端口参数；标准 3240 时省略。
+        // usbip-win2 的 attach 在 UDE 驱动确认挂载后会直接返回，并输出 successfully attached to port N。
+        // --once：只进行本次 Attach，不让客户端在服务端暂时不可达时持续重试。
         var result = await runner.RunAsync(
             usbipPath,
             $"{BuildTcpPortOption(port)}attach -r {Quote(host)} -b {Quote(busId)} --once",
@@ -179,6 +179,24 @@ public sealed class UsbipWinVhciClientBackend : IUsbIpClientBackend
         => port == UsbIpProtocolConstants.DefaultPort
             ? string.Empty
             : $"-t {port.ToString(CultureInfo.InvariantCulture)} ";
+
+    private static string ResolveUsbipPath(string configuredPath)
+    {
+        if (!OperatingSystem.IsWindows()) return configuredPath;
+        if (Path.IsPathRooted(configuredPath) && File.Exists(configuredPath)) return configuredPath;
+
+        // 优先固定到 usbip-win2 官方安装目录，避免覆盖升级后旧 CMD 的 PATH 仍指向 cezanne/usbip-win。
+        if (string.Equals(configuredPath, "usbip.exe", StringComparison.OrdinalIgnoreCase))
+        {
+            var usbipWin2 = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                "USBip",
+                "usbip.exe");
+            if (File.Exists(usbipWin2)) return usbipWin2;
+        }
+
+        return configuredPath;
+    }
 
     private static string Quote(string value) => $"\"{value.Replace("\"", "\\\"")}\"";
 }
