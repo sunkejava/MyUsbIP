@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 
 namespace MyUsbIP.Abstractions;
@@ -11,14 +12,21 @@ public sealed class JsonLinesUsbIpEventSink : IUsbIpEventSink, IAsyncDisposable
 {
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly StreamWriter writer;
-    private readonly JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+    private readonly JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        // 日志主要用于人工排查。默认 JSON Encoder 会把中文写成 \uXXXX，严重影响直接阅读。
+        // UnsafeRelaxedJsonEscaping 仍会保持 JSON 必需的引号/控制字符转义，但中文直接以 UTF-8 原文落盘。
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
 
     public JsonLinesUsbIpEventSink(string filePath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
         var fullPath = Path.GetFullPath(filePath);
         Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
-        writer = new StreamWriter(new FileStream(fullPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite, 4096, FileOptions.Asynchronous))
+        writer = new StreamWriter(
+            new FileStream(fullPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite, 4096, FileOptions.Asynchronous),
+            new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false))
         {
             AutoFlush = true,
         };
