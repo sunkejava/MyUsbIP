@@ -50,10 +50,14 @@ jobs:
           } else {
             ./scripts/windows/Validate-Dependencies.ps1
           }
-      - name: Publish CLI
-        run: dotnet publish tools/MyUsbIP.Cli/MyUsbIP.Cli.csproj -c Release -r ${{ matrix.rid }} --self-contained false -o artifacts/${{ matrix.rid }}/cli
-      - name: Publish Daemon
-        run: dotnet publish apps/MyUsbIP.Daemon/MyUsbIP.Daemon.csproj -c Release -r ${{ matrix.rid }} --self-contained false -o artifacts/${{ matrix.rid }}/daemon
+      - name: Publish CLI self-contained single file
+        run: dotnet publish tools/MyUsbIP.Cli/MyUsbIP.Cli.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o artifacts/${{ matrix.rid }}/cli
+      - name: Publish Daemon self-contained single file
+        run: dotnet publish apps/MyUsbIP.Daemon/MyUsbIP.Daemon.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o artifacts/${{ matrix.rid }}/daemon
+      - name: Publish Windows double-click setup
+        if: matrix.rid == 'win-x64'
+        shell: pwsh
+        run: dotnet publish tools/MyUsbIP.WindowsSetup/MyUsbIP.WindowsSetup.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o artifacts/win-x64/setup
       - name: Build Windows deployment bundles
         if: matrix.rid == 'win-x64'
         shell: pwsh
@@ -121,7 +125,6 @@ jobs:
         run: |
           set -euo pipefail
           if gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
-            echo "Release $RELEASE_TAG 已存在，补充/覆盖附件。"
             gh release upload "$RELEASE_TAG" \
               MyUsbIP-Server-win-x64.zip \
               MyUsbIP-Client-win-x64.zip \
