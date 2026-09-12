@@ -10,4 +10,11 @@
     <DebugType>None</DebugType>
     <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Embedded\dependencies.windows.json" LogicalName="MyUsbIP.Setup.dependencies.windows.json" Condition="Exists('Embedded\dependencies.windows.json')" />
+    <EmbeddedResource Include="Embedded\server-payload.zip" LogicalName="MyUsbIP.Setup.server-payload.zip" Condition="Exists('Embedded\server-payload.zip')" />
+    <EmbeddedResource Include="Embedded\client-payload.zip" LogicalName="MyUsbIP.Setup.client-payload.zip" Condition="Exists('Embedded\client-payload.zip')" />
+    <EmbeddedResource Include="Embedded\server-dependency.bin" LogicalName="MyUsbIP.Setup.server-dependency.bin" Condition="Exists('Embedded\server-dependency.bin')" />
+    <EmbeddedResource Include="Embedded\client-dependency.bin" LogicalName="MyUsbIP.Setup.client-dependency.bin" Condition="Exists('Embedded\client-dependency.bin')" />
+  </ItemGroup>
 </Project>
