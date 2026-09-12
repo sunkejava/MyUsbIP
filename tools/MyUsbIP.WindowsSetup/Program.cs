@@ -50,29 +50,27 @@ try
     var dependencyPath = Path.Combine(baseDir, "dependencies", "cache", package.FileName);
     if (!File.Exists(dependencyPath)) throw new FileNotFoundException("安装包缺少离线驱动依赖。", dependencyPath);
 
-    var actualHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(dependencyPath))).ToLowerInvariant();
-    if (string.IsNullOrWhiteSpace(package.Sha256) || !actualHash.Equals(package.Sha256.Trim(), StringComparison.OrdinalIgnoreCase))
-        throw new InvalidOperationException($"驱动依赖 SHA256 校验失败。期望={package.Sha256} 实际={actualHash}");
+    using (var stream = File.OpenRead(dependencyPath))
+    {
+        var actualHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(stream)).ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(package.Sha256) || !actualHash.Equals(package.Sha256.Trim(), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"驱动依赖 SHA256 校验失败。期望={package.Sha256} 实际={actualHash}");
+    }
     Write($"依赖校验通过: {package.FileName}");
 
-    if (role == "server")
-        InstallServer(baseDir, dependencyPath, Write);
-    else
-        InstallClient(baseDir, dependencyPath, Write);
+    if (role == "server") InstallServer(baseDir, dependencyPath, Write);
+    else InstallClient(baseDir, dependencyPath, Write);
 
     Write("安装与内置自检全部完成。");
     Write($"安装日志: {logPath}");
-    Console.WriteLine();
-    Console.WriteLine("安装成功。按任意键关闭窗口。");
+    Console.WriteLine("\n安装成功。按任意键关闭窗口。");
     Console.ReadKey(true);
     return 0;
 }
 catch (Exception ex)
 {
     Write($"安装失败: {ex}");
-    Console.WriteLine();
-    Console.WriteLine($"安装失败，日志已保存：{logPath}");
-    Console.WriteLine("按任意键关闭窗口。");
+    Console.WriteLine($"\n安装失败，日志已保存：{logPath}\n按任意键关闭窗口。");
     Console.ReadKey(true);
     return 1;
 }
@@ -85,7 +83,7 @@ static void InstallServer(string baseDir, string dependencyPath, Action<string> 
 
     write("安装 UsbDk...");
     var msiLog = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "MyUsbIP", "InstallerLogs", "usbdk-msi.log");
-    var code = Run("msiexec.exe", $"/i \"{dependencyPath}\" /qn /norestart /l*v \"{msiLog}\"");
+    var code = RunArgs("msiexec.exe", "/i", dependencyPath, "/qn", "/norestart", "/l*v", msiLog);
     if (code is not (0 or 3010)) throw new InvalidOperationException($"UsbDk 安装失败，ExitCode={code}，日志={msiLog}");
 
     write("部署服务端程序...");
@@ -99,22 +97,22 @@ static void InstallServer(string baseDir, string dependencyPath, Action<string> 
     if (!File.Exists(daemon) || !File.Exists(config)) throw new InvalidOperationException("服务端程序发布文件不完整。");
 
     write("配置 Windows 防火墙...");
-    Run("netsh.exe", "advfirewall firewall delete rule name=\"MyUsbIP USB-IP Server\"");
-    EnsureSuccess(Run("netsh.exe", "advfirewall firewall add rule name=\"MyUsbIP USB-IP Server\" dir=in action=allow protocol=TCP localport=3240 profile=any"), "创建防火墙规则");
+    RunArgs("netsh.exe", "advfirewall", "firewall", "delete", "rule", "name=MyUsbIP USB-IP Server");
+    EnsureSuccess(RunArgs("netsh.exe", "advfirewall", "firewall", "add", "rule", "name=MyUsbIP USB-IP Server", "dir=in", "action=allow", "protocol=TCP", "localport=3240", "profile=any"), "创建防火墙规则");
 
-    write("配置开机自动启动任务...");
-    Run("schtasks.exe", "/Delete /TN \"MyUsbIP USB-IP Server\" /F");
+    write("配置 SYSTEM 开机自动启动任务...");
+    RunArgs("schtasks.exe", "/Delete", "/TN", "MyUsbIP USB-IP Server", "/F");
     var taskCommand = $"\"{daemon}\" \"{config}\"";
-    EnsureSuccess(Run("schtasks.exe", $"/Create /TN \"MyUsbIP USB-IP Server\" /SC ONSTART /RU SYSTEM /RL HIGHEST /TR \"{taskCommand.Replace("\"", "\\\"")}\" /F"), "创建开机任务");
+    EnsureSuccess(RunArgs("schtasks.exe", "/Create", "/TN", "MyUsbIP USB-IP Server", "/SC", "ONSTART", "/RU", "SYSTEM", "/RL", "HIGHEST", "/TR", taskCommand, "/F"), "创建开机任务");
 
     write("启动 MyUsbIP 服务端...");
-    Run("taskkill.exe", "/F /IM myusbipd.exe");
-    EnsureSuccess(Run("schtasks.exe", "/Run /TN \"MyUsbIP USB-IP Server\""), "启动服务端任务");
+    RunArgs("taskkill.exe", "/F", "/IM", "myusbipd.exe");
+    EnsureSuccess(RunArgs("schtasks.exe", "/Run", "/TN", "MyUsbIP USB-IP Server"), "启动服务端任务");
 
     write("执行服务端自检...");
-    var usbdk = RunCapture("sc.exe", "query UsbDk");
+    var usbdk = RunCaptureArgs("sc.exe", "query", "UsbDk");
     if (usbdk.ExitCode != 0) throw new InvalidOperationException("未检测到 UsbDk 驱动服务。\n" + usbdk.Output);
-    if (!WaitPort(3240, TimeSpan.FromSeconds(15))) throw new InvalidOperationException("MyUsbIP 已启动但 TCP 3240 未监听，请检查安装日志和 ProgramData\\MyUsbIP 下日志。");
+    if (!WaitPort(3240, TimeSpan.FromSeconds(20))) throw new InvalidOperationException("MyUsbIP 已启动但 TCP 3240 未监听。请查看 ProgramData\\MyUsbIP\\InstallerLogs 与服务端 logs。 ");
     write("服务端自检通过：UsbDk 正常，TCP 3240 正常监听。");
 }
 
@@ -126,7 +124,6 @@ static void InstallClient(string baseDir, string dependencyPath, Action<string> 
 
     write("部署客户端程序...");
     CopyDirectory(payload, installDir);
-
     var usbipDir = Path.Combine(installDir, "usbip-win");
     if (Directory.Exists(usbipDir)) Directory.Delete(usbipDir, true);
     ZipFile.ExtractToDirectory(dependencyPath, usbipDir, overwriteFiles: true);
@@ -134,13 +131,13 @@ static void InstallClient(string baseDir, string dependencyPath, Action<string> 
         ?? throw new FileNotFoundException("usbip-win 压缩包中未找到 usbip.exe。");
 
     write("安装 usbip-win VHCI(UDE)...");
-    var installResult = RunCapture(usbip, "install -u");
-    if (installResult.ExitCode != 0)
+    var result = RunCaptureArgs(usbip, "install", "-u");
+    if (result.ExitCode != 0)
     {
-        write("UDE 安装返回失败，尝试 usbip.exe install 自动模式...");
-        installResult = RunCapture(usbip, "install");
+        write("UDE 模式安装失败，尝试自动模式...");
+        result = RunCaptureArgs(usbip, "install");
     }
-    if (installResult.ExitCode != 0) throw new InvalidOperationException($"VHCI 安装失败，ExitCode={installResult.ExitCode}\n{installResult.Output}");
+    if (result.ExitCode != 0) throw new InvalidOperationException($"VHCI 安装失败，ExitCode={result.ExitCode}\n{result.Output}");
 
     write("配置 usbip.exe 系统 PATH...");
     var binDir = Path.GetDirectoryName(usbip)!;
@@ -151,7 +148,7 @@ static void InstallClient(string baseDir, string dependencyPath, Action<string> 
         envKey.SetValue("Path", path.TrimEnd(';') + ";" + binDir, RegistryValueKind.ExpandString);
 
     write("执行客户端自检...");
-    var portResult = RunCapture(usbip, "port");
+    var portResult = RunCaptureArgs(usbip, "port");
     if (portResult.ExitCode != 0) throw new InvalidOperationException($"usbip.exe port 执行失败，VHCI 可能未正常安装。\n{portResult.Output}");
     write("客户端自检通过：usbip.exe 可执行，VHCI 已响应。");
 }
@@ -160,32 +157,36 @@ static void CopyDirectory(string source, string destination)
 {
     Directory.CreateDirectory(destination);
     foreach (var dir in Directory.EnumerateDirectories(source, "*", SearchOption.AllDirectories))
-        Directory.CreateDirectory(dir.Replace(source, destination, StringComparison.OrdinalIgnoreCase));
+        Directory.CreateDirectory(Path.Combine(destination, Path.GetRelativePath(source, dir)));
     foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
     {
-        var target = file.Replace(source, destination, StringComparison.OrdinalIgnoreCase);
+        var target = Path.Combine(destination, Path.GetRelativePath(source, file));
         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
         File.Copy(file, target, true);
     }
 }
 
-static int Run(string fileName, string arguments)
+static int RunArgs(string fileName, params string[] args)
 {
-    using var process = Process.Start(new ProcessStartInfo(fileName, arguments) { UseShellExecute = false, CreateNoWindow = true });
+    var start = new ProcessStartInfo(fileName) { UseShellExecute = false, CreateNoWindow = true };
+    foreach (var arg in args) start.ArgumentList.Add(arg);
+    using var process = Process.Start(start);
     if (process is null) return -1;
     process.WaitForExit();
     return process.ExitCode;
 }
 
-static (int ExitCode, string Output) RunCapture(string fileName, string arguments)
+static (int ExitCode, string Output) RunCaptureArgs(string fileName, params string[] args)
 {
-    using var process = Process.Start(new ProcessStartInfo(fileName, arguments)
+    var start = new ProcessStartInfo(fileName)
     {
         UseShellExecute = false,
         CreateNoWindow = true,
         RedirectStandardOutput = true,
         RedirectStandardError = true,
-    });
+    };
+    foreach (var arg in args) start.ArgumentList.Add(arg);
+    using var process = Process.Start(start);
     if (process is null) return (-1, "进程启动失败");
     var output = process.StandardOutput.ReadToEnd() + Environment.NewLine + process.StandardError.ReadToEnd();
     process.WaitForExit();
@@ -205,7 +206,8 @@ static bool WaitPort(int port, TimeSpan timeout)
         try
         {
             using var client = new TcpClient();
-            if (client.ConnectAsync("127.0.0.1", port).Wait(TimeSpan.FromMilliseconds(500))) return true;
+            client.Connect("127.0.0.1", port);
+            if (client.Connected) return true;
         }
         catch { }
         Thread.Sleep(500);
