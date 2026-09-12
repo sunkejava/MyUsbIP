@@ -68,10 +68,9 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
         try
         {
             // UsbDk 对部分 USB 串口设备（包括部分 CH340 类设备）执行 StopRedirect 后，
-            // 再次 StartRedirect 可能失败或长时间阻塞。因此 Redirect 句柄作为服务端设备捕获生命周期保留，
-            // USB/IP 会话结束时只 ResetDevice，新的 IMPORT 复用已捕获设备。
+            // 再次 StartRedirect 可能失败或长时间阻塞。因此 Redirect 句柄作为服务端设备捕获生命周期保留。
+            // 首次 IMPORT 只执行 StartRedirect；后续会话复用上一次 EndSession 已 Reset 的句柄。
             await manager.ShareAsync(busId, cancellationToken).ConfigureAwait(false);
-            await manager.ResetAsync(busId, cancellationToken).ConfigureAwait(false);
         }
         catch
         {
@@ -85,16 +84,7 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
         // 先无条件释放 USB/IP 会话所有权。
         // 即使 UsbDk ResetDevice 自身异常/阻塞，也不能让 BUSID 永久处于 Busy 状态。
         activeSessions.TryRemove(busId, out _);
-
-        try
-        {
-            await manager.ResetAsync(busId, cancellationToken).ConfigureAwait(false);
-        }
-        catch
-        {
-            // Reset 失败不能恢复成“会话仍占用”。下一次 IMPORT 会再次尝试 Reset。
-            throw;
-        }
+        await manager.ResetAsync(busId, cancellationToken).ConfigureAwait(false);
     }
 
     public Task<UsbIpSubmitCompletion> SubmitAsync(string busId, UsbIpSubmitRequest request, CancellationToken cancellationToken = default)
