@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using MyUsbIP.Abstractions;
@@ -7,7 +8,8 @@ namespace MyUsbIP.NativeServer;
 
 /// <summary>
 /// 负责把标准 USB/IP 网络请求转交给底层 USB 设备传输实现。
-/// Windows 下最终由 MyUsbIP.Exporter.sys 提供真实 USB URB 转发能力。
+/// Windows 生产模式下由 UsbDkExportTransport 提供真实 USB 访问能力；
+/// 实验模式下也可以由自研 Exporter 驱动实现。
 /// </summary>
 public interface IUsbIpExportTransport
 {
@@ -20,7 +22,8 @@ public interface IUsbIpExportTransport
 }
 
 /// <summary>
-/// 可选的描述符提供器。自研 Windows UdeCx 客户端在创建虚拟 USB 设备之前需要预取真实设备描述符。
+/// 可选的描述符提供器。实验性 UdeCx 客户端在创建虚拟 USB 设备之前需要预取真实设备描述符。
+/// usbip-win VHCI 客户端正常通过 EP0 标准请求读取描述符，不依赖此扩展。
 /// </summary>
 public interface IUsbDescriptorProvider
 {
@@ -29,8 +32,7 @@ public interface IUsbDescriptorProvider
 
 /// <summary>
 /// MyUsbIP 自研 USB/IP TCP 服务。
-/// 不依赖 usbipd-win；直接实现 USB/IP DEVLIST / IMPORT / SUBMIT / UNLINK 数据路径，
-/// 并额外提供 UdeCx 所需的描述符预取扩展。
+/// 不依赖 usbipd-win；直接实现 USB/IP DEVLIST / IMPORT / SUBMIT / UNLINK 数据路径。
 /// </summary>
 public sealed class UsbIpNativeServer : IAsyncDisposable
 {
@@ -135,39 +137,124 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// USB/IP 数据阶段允许多个 URB 同时在途。这里读取请求时只负责解析和分发，
+    /// 不等待某个物理 USB 请求结束后才继续读网络，避免 Interrupt/CCID 长轮询阻塞后续 Control/Bulk 请求。
+    /// 返回包允许乱序完成，但同一 NetworkStream 的写操作必须串行化，防止帧内容交叉。
+    /// </summary>
     private async Task PumpUrbAsync(Stream stream, string busId, CancellationToken cancellationToken)
     {
-        while (!cancellationToken.IsCancellationRequested)
+        using var writeGate = new SemaphoreSlim(1, 1);
+        using var sessionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var pending = new ConcurrentDictionary<uint, Task>();
+
+        async Task WriteSubmitAsync(UsbIpSubmitCompletion completion)
         {
-            var basic = await UsbIpWire.ReadBasicHeaderAsync(stream, cancellationToken).ConfigureAwait(false);
-            switch (basic.Command)
+            await writeGate.WaitAsync(sessionCts.Token).ConfigureAwait(false);
+            try
             {
-                case UsbIpDataCommands.CmdSubmit:
+                await UsbIpWire.WriteSubmitCompletionAsync(stream, completion, sessionCts.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                writeGate.Release();
+            }
+        }
+
+        async Task ProcessSubmitAsync(UsbIpSubmitRequest request)
+        {
+            try
+            {
+                var completion = await transport.SubmitAsync(busId, request, sessionCts.Token).ConfigureAwait(false);
+                await WriteSubmitAsync(completion).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (sessionCts.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                // USB/IP 使用负 errno 风格 status。单个 URB 失败不应该直接破坏整个 TCP 会话。
+                try
                 {
-                    var request = await UsbIpWire.ReadSubmitAsync(stream, basic.Sequence, basic.DeviceId,
-                        basic.Direction, basic.Endpoint, cancellationToken).ConfigureAwait(false);
-                    var completion = await transport.SubmitAsync(busId, request, cancellationToken).ConfigureAwait(false);
-                    await UsbIpWire.WriteSubmitCompletionAsync(stream, completion, cancellationToken).ConfigureAwait(false);
-                    break;
+                    var failure = new UsbIpSubmitCompletion(
+                        request.Sequence,
+                        request.DeviceId,
+                        request.Direction,
+                        request.Endpoint,
+                        -5,
+                        0,
+                        request.StartFrame,
+                        request.NumberOfPackets,
+                        1,
+                        Array.Empty<byte>());
+                    await WriteSubmitAsync(failure).ConfigureAwait(false);
                 }
-                case UsbIpDataCommands.CmdUnlink:
+                catch
                 {
-                    var request = await UsbIpWire.ReadUnlinkAsync(stream, basic.Sequence, basic.DeviceId,
-                        basic.Direction, basic.Endpoint, cancellationToken).ConfigureAwait(false);
-                    var status = 0;
-                    try
-                    {
-                        await transport.CancelAsync(busId, request.TargetSequence, cancellationToken).ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        status = -1;
-                    }
-                    await UsbIpWire.WriteUnlinkCompletionAsync(stream, request, status, cancellationToken).ConfigureAwait(false);
-                    break;
+                    sessionCts.Cancel();
                 }
-                default:
-                    throw new InvalidDataException($"未知 USB/IP 数据命令 0x{basic.Command:X8}。 ");
+
+                await eventSink.WriteAsync(new(DateTimeOffset.Now, "native.urb.failed", "Warning", null,
+                    busId, null, $"URB Seq={request.Sequence} 失败: {ex.Message}", Exception: ex), CancellationToken.None);
+            }
+            finally
+            {
+                pending.TryRemove(request.Sequence, out _);
+            }
+        }
+
+        try
+        {
+            while (!sessionCts.IsCancellationRequested)
+            {
+                var basic = await UsbIpWire.ReadBasicHeaderAsync(stream, sessionCts.Token).ConfigureAwait(false);
+                switch (basic.Command)
+                {
+                    case UsbIpDataCommands.CmdSubmit:
+                    {
+                        var request = await UsbIpWire.ReadSubmitAsync(stream, basic.Sequence, basic.DeviceId,
+                            basic.Direction, basic.Endpoint, sessionCts.Token).ConfigureAwait(false);
+                        var task = ProcessSubmitAsync(request);
+                        pending[request.Sequence] = task;
+                        break;
+                    }
+                    case UsbIpDataCommands.CmdUnlink:
+                    {
+                        var request = await UsbIpWire.ReadUnlinkAsync(stream, basic.Sequence, basic.DeviceId,
+                            basic.Direction, basic.Endpoint, sessionCts.Token).ConfigureAwait(false);
+                        var status = 0;
+                        try
+                        {
+                            await transport.CancelAsync(busId, request.TargetSequence, sessionCts.Token).ConfigureAwait(false);
+                        }
+                        catch
+                        {
+                            status = -1;
+                        }
+
+                        await writeGate.WaitAsync(sessionCts.Token).ConfigureAwait(false);
+                        try
+                        {
+                            await UsbIpWire.WriteUnlinkCompletionAsync(stream, request, status, sessionCts.Token).ConfigureAwait(false);
+                        }
+                        finally
+                        {
+                            writeGate.Release();
+                        }
+                        break;
+                    }
+                    default:
+                        throw new InvalidDataException($"未知 USB/IP 数据命令 0x{basic.Command:X8}。 ");
+                }
+            }
+        }
+        finally
+        {
+            sessionCts.Cancel();
+            var current = pending.Values.ToArray();
+            if (current.Length > 0)
+            {
+                try { await Task.WhenAll(current).ConfigureAwait(false); } catch { }
             }
         }
     }
