@@ -34,7 +34,7 @@ var attachTimeout = TimeSpan.FromSeconds(Math.Max(config.CommandTimeoutSeconds, 
 var backendObject = UsbIpBackendFactory.CreateDefault(sink, timeout);
 var serverBackend = (IUsbIpServerBackend)backendObject;
 IUsbIpClientBackend clientBackend = OperatingSystem.IsWindows()
-    ? new UsbipWinVhciClientBackend(config.UsbipWinPath, sink, attachTimeout)
+    ? new UsbipWinVhciClientBackend(config.UsbipWinPath, sink, attachTimeout, config.ReceiveMode)
     : (IUsbIpClientBackend)backendObject;
 
 var server = new MyUsbIpServer(serverBackend, sink);
@@ -57,6 +57,7 @@ try
             ["logPath"] = config.Logging.Enabled ? logPath : null,
             ["commandTimeoutSeconds"] = config.CommandTimeoutSeconds,
             ["attachTimeoutSeconds"] = config.AttachTimeoutSeconds,
+            ["receiveMode"] = config.ReceiveMode,
         }));
 
     switch (args[0].ToLowerInvariant())
@@ -128,13 +129,14 @@ async Task HandleClientAsync(string[] command)
                 command[2], command[1], "请求远程挂载设备", new Dictionary<string, object?>
                 {
                     ["attachTimeoutSeconds"] = config.AttachTimeoutSeconds,
+                    ["receiveMode"] = config.ReceiveMode,
                 }));
             var result = await client.AttachAsync(command[1], command[2]);
             await sink.WriteAsync(new UsbIpEvent(DateTimeOffset.Now, "client.attach.result",
                 result.Success ? "Information" : "Warning", null, command[2], command[1], result.Message,
-                new Dictionary<string, object?> { ["localPort"] = result.Port, ["success"] = result.Success }));
+                new Dictionary<string, object?> { ["localPort"] = result.Port, ["success"] = result.Success, ["receiveMode"] = config.ReceiveMode }));
             Console.WriteLine(result.Success
-                ? $"已挂载 {command[2]}，本地端口: {result.Port?.ToString() ?? "由 VHCI 分配"}"
+                ? $"已挂载 {command[2]}，本地端口: {result.Port?.ToString() ?? "由 VHCI 分配"}，receive-mode={config.ReceiveMode}"
                 : result.Message);
             break;
         }
@@ -162,6 +164,11 @@ static void PrintDevices(IReadOnlyList<UsbIpDeviceInfo> devices)
     {
         Console.WriteLine($"{d.BusId,-20} {d.VidPid,-10} {d.State,-10} {FormatSpeed(d.Speed),-10} {(d.ClientAddress ?? "-"),-20} {d.Product}");
         Console.WriteLine($"  bus/dev={d.BusNumber}/{d.DeviceNumber} usb={FormatBcd(d.UsbVersion)} device={FormatBcd(d.DeviceVersion)} class={d.DeviceClass:X2}/{d.DeviceSubClass:X2}/{d.DeviceProtocol:X2} configs={d.ConfigurationCount} config={d.ConfigurationValue} interfaces={d.InterfaceCount}");
+        for (var i = 0; i < d.Interfaces.Count; i++)
+        {
+            var iface = d.Interfaces[i];
+            Console.WriteLine($"  interface[{i}]={iface.Class:X2}/{iface.SubClass:X2}/{iface.Protocol:X2}");
+        }
         if (!string.IsNullOrWhiteSpace(d.InstanceId)) Console.WriteLine($"  instance={d.InstanceId}");
         if (!string.IsNullOrWhiteSpace(d.SerialNumber)) Console.WriteLine($"  serial={d.SerialNumber}");
         if (d.ConnectedAt is not null || !string.IsNullOrWhiteSpace(d.SessionId))
@@ -217,6 +224,7 @@ internal sealed record ClientCliConfig
     public string UsbipWinPath { get; init; } = "usbip.exe";
     public int CommandTimeoutSeconds { get; init; } = 15;
     public int AttachTimeoutSeconds { get; init; } = 120;
+    public string ReceiveMode { get; init; } = "zero-copy";
     public ClientLoggingConfig Logging { get; init; } = new();
 }
 
