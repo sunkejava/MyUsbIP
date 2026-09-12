@@ -9,6 +9,7 @@ var failures = new List<string>();
 await TestOperationHeaderAsync();
 await TestBusIdAsync();
 await TestDeviceWireMetadataAsync();
+await TestDevListInterfacesAsync();
 await TestDeviceStatusProtocolAsync();
 await TestChineseJsonLogAsync();
 TestAutoShareRule();
@@ -65,6 +66,39 @@ async Task TestDeviceWireMetadataAsync()
     Assert(BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(288, 4)) == 8, "USB/IP busnum 写入错误");
     Assert(BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(292, 4)) == 4, "USB/IP devnum 写入错误");
     Assert(BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(296, 4)) == 2, "USB/IP speed 写入错误");
+}
+
+async Task TestDevListInterfacesAsync()
+{
+    var device = new UsbIpDeviceInfo
+    {
+        BusId = "0000002F-00000004",
+        Path = "USB\\VID_1A86&PID_7523\\4",
+        BusNumber = 47,
+        DeviceNumber = 4,
+        Speed = 2,
+        VendorId = 0x1A86,
+        ProductId = 0x7523,
+        DeviceClass = 0xFF,
+        DeviceSubClass = 0x01,
+        DeviceProtocol = 0x02,
+        ConfigurationValue = 1,
+        ConfigurationCount = 1,
+        InterfaceCount = 1,
+        State = UsbIpDeviceState.Available,
+    };
+
+    await using var stream = new MemoryStream();
+    await UsbIpWire.WriteDevListReplyAsync(stream, new[] { device });
+    var bytes = stream.ToArray();
+    var expectedLength = UsbIpCodec.OperationHeaderSize + 4 + UsbIpWire.DeviceWireSize + UsbIpWire.InterfaceWireSize;
+    Assert(bytes.Length == expectedLength, "DEVLIST 未按 bNumInterfaces 写入 usb_interface 记录");
+
+    var interfaceOffset = UsbIpCodec.OperationHeaderSize + 4 + UsbIpWire.DeviceWireSize;
+    Assert(bytes[interfaceOffset] == device.DeviceClass, "DEVLIST interface class 写入错误");
+    Assert(bytes[interfaceOffset + 1] == device.DeviceSubClass, "DEVLIST interface subclass 写入错误");
+    Assert(bytes[interfaceOffset + 2] == device.DeviceProtocol, "DEVLIST interface protocol 写入错误");
+    Assert(bytes[interfaceOffset + 3] == 0, "DEVLIST interface padding 写入错误");
 }
 
 async Task TestDeviceStatusProtocolAsync()
