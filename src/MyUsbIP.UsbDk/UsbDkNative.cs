@@ -36,13 +36,13 @@ internal static class UsbDkNative
     internal static extern UsbDkTransferResult UsbDk_ReadPipe(
         nint deviceHandle,
         ref UsbDkTransferRequest request,
-        ref NativeOverlappedData overlapped);
+        nint overlapped);
 
     [DllImport("UsbDkHelper.dll", CallingConvention = CallingConvention.Cdecl, SetLastError = true)]
     internal static extern UsbDkTransferResult UsbDk_WritePipe(
         nint deviceHandle,
         ref UsbDkTransferRequest request,
-        ref NativeOverlappedData overlapped);
+        nint overlapped);
 
     [DllImport("UsbDkHelper.dll", CallingConvention = CallingConvention.Cdecl, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -59,12 +59,12 @@ internal static class UsbDkNative
     [DllImport("UsbDkHelper.dll", CallingConvention = CallingConvention.Cdecl)]
     internal static extern nint UsbDk_GetRedirectorSystemHandle(nint deviceHandle);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     internal static extern nint CreateEventW(nint eventAttributes, bool manualReset, bool initialState, string? name);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    internal static extern bool GetOverlappedResult(nint fileHandle, ref NativeOverlappedData overlapped, out uint bytesTransferred, bool wait);
+    internal static extern bool GetOverlappedResult(nint fileHandle, nint overlapped, out uint bytesTransferred, bool wait);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
