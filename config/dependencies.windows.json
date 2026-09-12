@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "cacheDirectory": "dependencies/cache",
   "packages": [
     {
@@ -8,28 +8,32 @@
       "enabled": true,
       "version": "1.0.22",
       "fileName": "UsbDk_1.0.22_x64.msi",
-      "sourcePage": "https://github.com/daynix/UsbDk",
-      "downloadUrl": "",
+      "sourcePage": "https://github.com/daynix/UsbDk/releases/tag/v1.00-22",
+      "downloadUrl": "https://github.com/daynix/UsbDk/releases/download/v1.00-22/UsbDk_1.0.22_x64.msi",
       "sha256": "",
+      "installType": "msi",
       "requiredFilesAfterInstall": [
         "C:\\Program Files\\UsbDk Runtime Library\\UsbDkHelper.dll"
       ],
-      "notes": "生产环境必须填入经过人工确认的官方下载地址与 SHA256；不要在现场环境使用 latest 动态地址。"
+      "license": "Apache-2.0",
+      "notes": "下载地址已固定到官方 v1.00-22 Release。首次准备发布包时先执行 Install-Dependencies.ps1 -Role Server -PrepareHash，再把输出 SHA256 固定回本清单；生产安装仍拒绝空 SHA256。"
     },
     {
       "id": "usbip-win-vhci-x64",
       "role": "client",
       "enabled": true,
-      "version": "pinned-by-project",
-      "fileName": "usbip-win-vhci-x64.zip",
-      "sourcePage": "https://github.com/cezanne/usbip-win",
-      "downloadUrl": "",
+      "version": "0.3.6-dev",
+      "fileName": "usbip-win-0.3.6-dev.zip",
+      "sourcePage": "https://github.com/cezanne/usbip-win/releases/tag/v0.3.6-dev",
+      "downloadUrl": "https://github.com/cezanne/usbip-win/releases/download/v0.3.6-dev/usbip-win-0.3.6-dev.zip",
       "sha256": "",
+      "installType": "zip",
       "extractTo": "dependencies/runtime/usbip-win",
       "requiredFilesAfterExtract": [
         "usbip.exe"
       ],
-      "notes": "根据选定分支/Release 固定一套 WDM 或 UDE VHCI 文件。若使用测试签名驱动，客户端需要测试证书、TESTSIGNING 和重启。"
+      "license": "GPL-3.0",
+      "notes": "该上游 Release 的 VHCI(WDM/UDE)为 Microsoft attestation signed。正式发布前固定 SHA256，并保留 GPL-3.0 许可证及对应源码获取说明。"
     }
   ]
 }
