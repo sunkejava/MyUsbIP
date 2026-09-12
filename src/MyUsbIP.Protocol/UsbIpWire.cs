@@ -70,13 +70,13 @@ public static class UsbIpWire
         BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(296, 4), device.Speed);
         BinaryPrimitives.WriteUInt16BigEndian(buffer.AsSpan(300, 2), device.VendorId);
         BinaryPrimitives.WriteUInt16BigEndian(buffer.AsSpan(302, 2), device.ProductId);
-        BinaryPrimitives.WriteUInt16BigEndian(buffer.AsSpan(304, 2), 0x0100);
-        buffer[306] = 0;
-        buffer[307] = 0;
-        buffer[308] = 0;
-        buffer[309] = 1;
-        buffer[310] = 1;
-        buffer[311] = 0;
+        BinaryPrimitives.WriteUInt16BigEndian(buffer.AsSpan(304, 2), device.DeviceVersion);
+        buffer[306] = device.DeviceClass;
+        buffer[307] = device.DeviceSubClass;
+        buffer[308] = device.DeviceProtocol;
+        buffer[309] = device.ConfigurationValue == 0 ? (byte)1 : device.ConfigurationValue;
+        buffer[310] = device.ConfigurationCount == 0 ? (byte)1 : device.ConfigurationCount;
+        buffer[311] = device.InterfaceCount;
 
         await stream.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
         UsbIpDiagnostics.BytesSent.Add(buffer.Length);
