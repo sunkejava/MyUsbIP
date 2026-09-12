@@ -67,6 +67,8 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
 
         try
         {
+            // 每个新的 USB/IP IMPORT 都重新创建 UsbDk Redirect。
+            // CH340 等设备在 VHCI detach 后继续复用旧 Redirect/Handle 可能导致第二次 attach 失败。
             await manager.ShareAsync(busId, cancellationToken).ConfigureAwait(false);
         }
         catch
@@ -76,14 +78,14 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
         }
     }
 
-    public Task EndSessionAsync(string busId, CancellationToken cancellationToken = default)
+    public async Task EndSessionAsync(string busId, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         activeSessions.TryRemove(busId, out _);
 
-        // 保持 UsbDk Redirect，便于客户端断线后快速重连；这里只释放网络会话独占锁。
-        // 管理层执行 Unshare 时才真正 UsbDk_StopRedirect。
-        return Task.CompletedTask;
+        // detach/TCP 断开时彻底 StopRedirect，下一次 attach 使用全新的 UsbDk Handle。
+        // 这比复用旧 Redirect 更符合真实 USB 重新枚举语义，也避免 CH340 endpoint 状态残留。
+        await manager.UnshareAsync(busId, cancellationToken).ConfigureAwait(false);
     }
 
     public Task<UsbIpSubmitCompletion> SubmitAsync(string busId, UsbIpSubmitRequest request, CancellationToken cancellationToken = default)
