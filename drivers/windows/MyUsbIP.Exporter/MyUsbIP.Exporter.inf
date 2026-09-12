@@ -1,0 +1,41 @@
+[Version]
+Signature="$WINDOWS NT$"
+Class=USB
+ClassGuid={36FC9E60-C465-11CF-8056-444553540000}
+Provider=%ProviderName%
+DriverVer=09/12/2026,1.0.0.0
+CatalogFile=MyUsbIP.Exporter.cat
+PnpLockdown=1
+
+[DestinationDirs]
+DefaultDestDir = 12
+
+[Manufacturer]
+%ManufacturerName%=MyUsbIP,NTamd64.10.0
+
+; Exporter 采用软件控制设备 + USB 过滤模块组合。
+; 正式部署时由安装器按允许共享的设备实例配置 UpperFilters，避免全局过滤全部 USB 设备。
+[MyUsbIP.NTamd64.10.0]
+%MyUsbIPExporter.DeviceDesc%=MyUsbIPExporter_Install,Root\MyUsbIPExporter
+
+[MyUsbIPExporter_Install.NT]
+CopyFiles=DriverCopyFiles
+
+[DriverCopyFiles]
+MyUsbIP.Exporter.sys
+
+[MyUsbIPExporter_Install.NT.Services]
+AddService=MyUsbIPExporter,0x00000002,MyUsbIPExporter_Service
+
+[MyUsbIPExporter_Service]
+DisplayName=%MyUsbIPExporter.SvcDesc%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%12%\MyUsbIP.Exporter.sys
+
+[Strings]
+ProviderName="MyUsbIP"
+ManufacturerName="MyUsbIP"
+MyUsbIPExporter.DeviceDesc="MyUsbIP USB Exporter Control"
+MyUsbIPExporter.SvcDesc="MyUsbIP USB Exporter Driver"
