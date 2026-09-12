@@ -32,17 +32,13 @@ internal static class UsbDkNative
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool UsbDk_StopRedirect(nint deviceHandle);
 
+    // 异步 I/O 时 UsbDk/驱动会在函数返回后继续访问 Request 与 OVERLAPPED，
+    // 因此两者都必须由调用方放在生命周期明确的非托管内存中。
     [DllImport("UsbDkHelper.dll", CallingConvention = CallingConvention.Cdecl, SetLastError = true)]
-    internal static extern UsbDkTransferResult UsbDk_ReadPipe(
-        nint deviceHandle,
-        ref UsbDkTransferRequest request,
-        nint overlapped);
+    internal static extern UsbDkTransferResult UsbDk_ReadPipe(nint deviceHandle, nint request, nint overlapped);
 
     [DllImport("UsbDkHelper.dll", CallingConvention = CallingConvention.Cdecl, SetLastError = true)]
-    internal static extern UsbDkTransferResult UsbDk_WritePipe(
-        nint deviceHandle,
-        ref UsbDkTransferRequest request,
-        nint overlapped);
+    internal static extern UsbDkTransferResult UsbDk_WritePipe(nint deviceHandle, nint request, nint overlapped);
 
     [DllImport("UsbDkHelper.dll", CallingConvention = CallingConvention.Cdecl, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
