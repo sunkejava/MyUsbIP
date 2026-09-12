@@ -40,6 +40,14 @@ public sealed record UsbIpSubmitCompletion(
     int ErrorCount,
     byte[] Payload);
 
+/// <summary>USB/IP UNLINK 请求。</summary>
+public sealed record UsbIpUnlinkRequest(
+    uint Sequence,
+    uint DeviceId,
+    uint Direction,
+    uint Endpoint,
+    uint TargetSequence);
+
 /// <summary>
 /// 标准 USB/IP 线协议辅助方法。
 /// 所有整数均使用网络字节序（大端）。
@@ -49,6 +57,7 @@ public static class UsbIpWire
     public const int DeviceWireSize = 312;
     public const int BasicHeaderSize = 20;
     public const int SubmitBodySize = 28;
+    public const int UnlinkBodySize = 28;
 
     public static async ValueTask WriteDeviceAsync(Stream stream, UsbIpDeviceInfo device, CancellationToken cancellationToken = default)
     {
@@ -56,10 +65,9 @@ public static class UsbIpWire
         WriteAscii(buffer.AsSpan(0, 256), device.InstanceId ?? device.Product ?? device.BusId);
         WriteAscii(buffer.AsSpan(256, 32), device.BusId);
 
-        // busnum/devnum/speed 由 Exporter 在后续版本提供。对自研客户端并非识别设备的必要字段。
         BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(288, 4), 0);
         BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(292, 4), 0);
-        BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(296, 4), 2); // USB_SPEED_FULL，未知时给安全默认值。
+        BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(296, 4), 2);
         BinaryPrimitives.WriteUInt16BigEndian(buffer.AsSpan(300, 2), device.VendorId);
         BinaryPrimitives.WriteUInt16BigEndian(buffer.AsSpan(302, 2), device.ProductId);
         BinaryPrimitives.WriteUInt16BigEndian(buffer.AsSpan(304, 2), 0x0100);
@@ -122,6 +130,15 @@ public static class UsbIpWire
         return new UsbIpSubmitRequest(sequence, deviceId, direction, endpoint, flags, length, startFrame, packets, interval, setup, payload);
     }
 
+    public static async ValueTask<UsbIpUnlinkRequest> ReadUnlinkAsync(Stream stream, uint sequence, uint deviceId, uint direction, uint endpoint, CancellationToken cancellationToken = default)
+    {
+        var body = new byte[UnlinkBodySize];
+        await UsbIpCodec.ReadExactlyAsync(stream, body, cancellationToken).ConfigureAwait(false);
+        UsbIpDiagnostics.BytesReceived.Add(body.Length);
+        var targetSequence = BinaryPrimitives.ReadUInt32BigEndian(body.AsSpan(0, 4));
+        return new UsbIpUnlinkRequest(sequence, deviceId, direction, endpoint, targetSequence);
+    }
+
     public static async ValueTask WriteSubmitCompletionAsync(Stream stream, UsbIpSubmitCompletion completion, CancellationToken cancellationToken = default)
     {
         var header = new byte[BasicHeaderSize + SubmitBodySize];
@@ -135,7 +152,6 @@ public static class UsbIpWire
         BinaryPrimitives.WriteInt32BigEndian(header.AsSpan(28, 4), completion.StartFrame);
         BinaryPrimitives.WriteInt32BigEndian(header.AsSpan(32, 4), completion.NumberOfPackets);
         BinaryPrimitives.WriteInt32BigEndian(header.AsSpan(36, 4), completion.ErrorCount);
-        // setup[8] 保持 0。
 
         await stream.WriteAsync(header, cancellationToken).ConfigureAwait(false);
         UsbIpDiagnostics.BytesSent.Add(header.Length);
@@ -144,6 +160,19 @@ public static class UsbIpWire
             await stream.WriteAsync(completion.Payload, cancellationToken).ConfigureAwait(false);
             UsbIpDiagnostics.BytesSent.Add(completion.Payload.Length);
         }
+    }
+
+    public static async ValueTask WriteUnlinkCompletionAsync(Stream stream, UsbIpUnlinkRequest request, int status, CancellationToken cancellationToken = default)
+    {
+        var buffer = new byte[BasicHeaderSize + UnlinkBodySize];
+        BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(0, 4), UsbIpDataCommands.RetUnlink);
+        BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(4, 4), request.Sequence);
+        BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(8, 4), request.DeviceId);
+        BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(12, 4), request.Direction);
+        BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(16, 4), request.Endpoint);
+        BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(20, 4), status);
+        await stream.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
+        UsbIpDiagnostics.BytesSent.Add(buffer.Length);
     }
 
     public static async ValueTask<(uint Command, uint Sequence, uint DeviceId, uint Direction, uint Endpoint)> ReadBasicHeaderAsync(Stream stream, CancellationToken cancellationToken = default)
