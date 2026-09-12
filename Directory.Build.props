@@ -6,9 +6,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
-    <VersionPrefix>1.1.2</VersionPrefix>
-    <AssemblyVersion>1.1.2.0</AssemblyVersion>
-    <FileVersion>1.1.2.0</FileVersion>
+    <VersionPrefix>1.1.3</VersionPrefix>
+    <AssemblyVersion>1.1.3.0</AssemblyVersion>
+    <FileVersion>1.1.3.0</FileVersion>
     <RepositoryUrl>https://github.com/sunkejava/MyUsbIP</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
   </PropertyGroup>
