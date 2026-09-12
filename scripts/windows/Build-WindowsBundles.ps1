@@ -18,11 +18,13 @@ if (-not (Test-Path $daemon)) { throw "Daemon 发布目录不存在: $daemon" }
 if (-not (Test-Path $cli)) { throw "CLI 发布目录不存在: $cli" }
 if (-not (Test-Path $setup)) { throw "Windows Setup 不存在: $setup" }
 
-New-Item -ItemType Directory -Force -Path \
-    (Join-Path $serverRoot 'payload\server'), \
-    (Join-Path $clientRoot 'payload\client'), \
-    (Join-Path $serverRoot 'config'), \
-    (Join-Path $clientRoot 'config') | Out-Null
+$bundleDirs = @(
+    (Join-Path $serverRoot 'payload\server'),
+    (Join-Path $clientRoot 'payload\client'),
+    (Join-Path $serverRoot 'config'),
+    (Join-Path $clientRoot 'config')
+)
+New-Item -ItemType Directory -Force -Path $bundleDirs | Out-Null
 
 Copy-Item "$daemon\*" (Join-Path $serverRoot 'payload\server') -Recurse -Force
 Copy-Item "$cli\*" (Join-Path $clientRoot 'payload\client') -Recurse -Force
@@ -34,7 +36,7 @@ Copy-Item "$repoRoot\config\dependencies.windows.json" (Join-Path $clientRoot 'c
 if ($IncludeCachedDependencies) {
     $cache = Join-Path $repoRoot 'dependencies\cache'
     if (-not (Test-Path $cache)) { throw "发布要求包含离线依赖，但缓存目录不存在: $cache" }
-    New-Item -ItemType Directory -Force -Path (Join-Path $serverRoot 'dependencies'),(Join-Path $clientRoot 'dependencies') | Out-Null
+    New-Item -ItemType Directory -Force -Path @((Join-Path $serverRoot 'dependencies'),(Join-Path $clientRoot 'dependencies')) | Out-Null
     Copy-Item $cache (Join-Path $serverRoot 'dependencies\cache') -Recurse -Force
     Copy-Item $cache (Join-Path $clientRoot 'dependencies\cache') -Recurse -Force
 }
@@ -60,6 +62,13 @@ MyUsbIP Client
 
 不需要安装 .NET 运行时，不需要执行 PowerShell/CMD 脚本。
 '@ | Set-Content (Join-Path $clientRoot 'README.txt') -Encoding UTF8
+
+foreach ($root in @($serverRoot,$clientRoot)) {
+    $bad = Get-ChildItem $root -Recurse -File | Where-Object { $_.Extension -in @('.ps1','.cmd','.bat') }
+    if ($bad) { throw "最终用户 Bundle 中不允许存在脚本入口: $($bad.FullName -join ', ')" }
+}
+if (-not (Test-Path (Join-Path $serverRoot 'MyUsbIP-Server-Setup.exe'))) { throw '服务端安装器缺失。' }
+if (-not (Test-Path (Join-Path $clientRoot 'MyUsbIP-Client-Setup.exe'))) { throw '客户端安装器缺失。' }
 
 $zipServer = "$serverRoot.zip"
 $zipClient = "$clientRoot.zip"
