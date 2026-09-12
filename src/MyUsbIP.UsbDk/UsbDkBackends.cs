@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using MyUsbIP.Abstractions;
 using MyUsbIP.NativeServer;
 using MyUsbIP.Protocol;
@@ -46,9 +47,7 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
     public async Task<IReadOnlyList<UsbIpDeviceInfo>> ListAsync(CancellationToken cancellationToken = default)
     {
         var devices = await manager.ListAsync(cancellationToken).ConfigureAwait(false);
-        return devices.Select(x => activeSessions.ContainsKey(x.BusId)
-            ? x with { State = UsbIpDeviceState.Attached }
-            : x).ToArray();
+        return devices.Select(x => DecorateWireMetadata(x, activeSessions.ContainsKey(x.BusId))).ToArray();
     }
 
     public async Task<UsbIpDeviceInfo?> FindAsync(string busId, CancellationToken cancellationToken = default)
@@ -96,5 +95,25 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
     {
         cancellationToken.ThrowIfCancellationRequested();
         return Task.FromResult(manager.GetDescriptorSet(busId));
+    }
+
+    private static UsbIpDeviceInfo DecorateWireMetadata(UsbIpDeviceInfo device, bool attached)
+    {
+        uint busNumber = 0;
+        uint deviceNumber = 0;
+        var parts = device.BusId.Split('-', 2, StringSplitOptions.TrimEntries);
+        if (parts.Length == 2)
+        {
+            _ = uint.TryParse(parts[0], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out busNumber);
+            _ = uint.TryParse(parts[1], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out deviceNumber);
+        }
+
+        return device with
+        {
+            Path = device.InstanceId ?? device.BusId,
+            BusNumber = busNumber,
+            DeviceNumber = deviceNumber,
+            State = attached ? UsbIpDeviceState.Attached : device.State,
+        };
     }
 }
