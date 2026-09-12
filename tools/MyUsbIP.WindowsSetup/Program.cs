@@ -87,7 +87,8 @@ static void InstallServer(string baseDir, string dependencyPath, Action<string> 
     if (code is not (0 or 3010)) throw new InvalidOperationException($"UsbDk 安装失败，ExitCode={code}，日志={msiLog}");
 
     write("部署服务端程序...");
-    CopyDirectory(payload, installDir);
+    CopyDirectory(payload, installDir, ["appsettings.json"]);
+    Directory.CreateDirectory(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "MyUsbIP", "ServerLogs"));
     var helper = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "UsbDk Runtime Library", "UsbDkHelper.dll");
     if (!File.Exists(helper)) throw new FileNotFoundException("UsbDk 已安装但未找到 UsbDkHelper.dll。", helper);
     File.Copy(helper, Path.Combine(installDir, "UsbDkHelper.dll"), true);
@@ -112,7 +113,7 @@ static void InstallServer(string baseDir, string dependencyPath, Action<string> 
     write("执行服务端自检...");
     var usbdk = RunCaptureArgs("sc.exe", "query", "UsbDk");
     if (usbdk.ExitCode != 0) throw new InvalidOperationException("未检测到 UsbDk 驱动服务。\n" + usbdk.Output);
-    if (!WaitPort(3240, TimeSpan.FromSeconds(20))) throw new InvalidOperationException("MyUsbIP 已启动但 TCP 3240 未监听。请查看 ProgramData\\MyUsbIP\\InstallerLogs 与服务端 logs。 ");
+    if (!WaitPort(3240, TimeSpan.FromSeconds(20))) throw new InvalidOperationException("MyUsbIP 已启动但 TCP 3240 未监听。请查看 ProgramData\\MyUsbIP\\InstallerLogs 与 ServerLogs。 ");
     write("服务端自检通过：UsbDk 正常，TCP 3240 正常监听。");
 }
 
@@ -123,7 +124,8 @@ static void InstallClient(string baseDir, string dependencyPath, Action<string> 
     if (!Directory.Exists(payload)) throw new DirectoryNotFoundException($"缺少客户端程序目录: {payload}");
 
     write("部署客户端程序...");
-    CopyDirectory(payload, installDir);
+    CopyDirectory(payload, installDir, ["clientsettings.json"]);
+    Directory.CreateDirectory(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "MyUsbIP", "ClientLogs"));
     var usbipDir = Path.Combine(installDir, "usbip-win");
     if (Directory.Exists(usbipDir)) Directory.Delete(usbipDir, true);
     ZipFile.ExtractToDirectory(dependencyPath, usbipDir, overwriteFiles: true);
@@ -153,15 +155,17 @@ static void InstallClient(string baseDir, string dependencyPath, Action<string> 
     write("客户端自检通过：usbip.exe 可执行，VHCI 已响应。");
 }
 
-static void CopyDirectory(string source, string destination)
+static void CopyDirectory(string source, string destination, IReadOnlySet<string>? preserveExistingRelativeFiles = null)
 {
     Directory.CreateDirectory(destination);
     foreach (var dir in Directory.EnumerateDirectories(source, "*", SearchOption.AllDirectories))
         Directory.CreateDirectory(Path.Combine(destination, Path.GetRelativePath(source, dir)));
     foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
     {
-        var target = Path.Combine(destination, Path.GetRelativePath(source, file));
+        var relative = Path.GetRelativePath(source, file);
+        var target = Path.Combine(destination, relative);
         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        if (preserveExistingRelativeFiles?.Contains(relative) == true && File.Exists(target)) continue;
         File.Copy(file, target, true);
     }
 }
