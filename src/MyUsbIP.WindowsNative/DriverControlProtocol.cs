@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Text;
+using MyUsbIP.Protocol;
 
 namespace MyUsbIP.WindowsNative;
 
@@ -22,6 +23,7 @@ public static class DriverControlProtocol
     public static readonly uint IoctlExporterSubmitUrb = CtlCode(0x804);
     public static readonly uint IoctlExporterCancelUrb = CtlCode(0x805);
     public static readonly uint IoctlExporterGetCompletion = CtlCode(0x806);
+    public static readonly uint IoctlExporterGetDescriptors = CtlCode(0x807);
 
     public static readonly uint IoctlVhciGetVersion = CtlCode(0x900);
     public static readonly uint IoctlVhciCreatePort = CtlCode(0x901);
@@ -56,5 +58,37 @@ public static class DriverControlProtocol
         BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(0, 4), ApiVersion);
         WriteFixedUtf8(buffer.AsSpan(4), busId);
         return buffer;
+    }
+
+    /// <summary>构造 UdeCx 创建虚拟 USB 设备请求。</summary>
+    public static byte[] BuildVhciCreatePortRequest(uint deviceId, string busId, UsbDescriptorSet descriptors)
+    {
+        const int headerSize = 96;
+        var total = checked(headerSize
+                            + descriptors.DeviceDescriptor.Length
+                            + descriptors.ConfigurationDescriptor.Length
+                            + descriptors.BosDescriptor.Length
+                            + descriptors.StringDescriptorBlob.Length);
+        var buffer = new byte[total];
+        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(0, 4), ApiVersion);
+        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(4, 4), deviceId);
+        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(8, 4), 0);
+        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(12, 4), checked((uint)descriptors.DeviceDescriptor.Length));
+        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(16, 4), checked((uint)descriptors.ConfigurationDescriptor.Length));
+        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(20, 4), checked((uint)descriptors.BosDescriptor.Length));
+        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(24, 4), checked((uint)descriptors.StringDescriptorBlob.Length));
+        WriteFixedUtf8(buffer.AsSpan(28, 64), busId);
+        var offset = headerSize;
+        Copy(descriptors.DeviceDescriptor);
+        Copy(descriptors.ConfigurationDescriptor);
+        Copy(descriptors.BosDescriptor);
+        Copy(descriptors.StringDescriptorBlob);
+        return buffer;
+
+        void Copy(byte[] data)
+        {
+            data.CopyTo(buffer, offset);
+            offset += data.Length;
+        }
     }
 }
