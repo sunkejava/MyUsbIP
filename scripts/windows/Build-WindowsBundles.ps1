@@ -59,8 +59,10 @@ MyUsbIP Client
 推荐：直接运行 Release 中的 MyUsbIP-Client-Setup.exe。
 ZIP 仅作为离线展开/排障备用包。
 
-安装器会自动完成管理员提权、usbip-win VHCI、CLI 部署、PATH 配置和自检。
+安装器会自动完成管理员提权、usbip-win2 UDE/VHCI、CLI 部署、PATH 配置、旧 usbip-win 迁移清理和自检。
 不需要安装 .NET 运行时，不需要执行 PowerShell/CMD/BAT 脚本。
+
+注意：首次安装或升级 usbip-win2 驱动时，Windows USB 3.x Hub/设备可能短暂重新枚举，请避开正在进行的 U 盘复制、摄像头、音频等关键 USB 操作。
 '@ | Set-Content (Join-Path $clientRoot 'README.txt') -Encoding UTF8
 
 foreach ($root in @($serverRoot,$clientRoot)) {
