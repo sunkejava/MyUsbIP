@@ -4,7 +4,8 @@ param(
     [string]$Manifest = "$PSScriptRoot\..\..\config\dependencies.windows.json",
     [switch]$Install,
     [switch]$ForceDownload,
-    [switch]$PrepareHash
+    [switch]$PrepareHash,
+    [switch]$FreezeHash
 )
 
 $ErrorActionPreference = 'Stop'
@@ -19,6 +20,7 @@ function Get-AbsolutePath([string]$Path, [string]$BaseDir) {
     return [IO.Path]::GetFullPath((Join-Path $BaseDir $Path))
 }
 
+if ($FreezeHash -and -not $PrepareHash) { throw '-FreezeHash 必须与 -PrepareHash 一起使用。' }
 if ($Install) { Require-Administrator }
 if (-not (Test-Path $Manifest)) { throw "依赖清单不存在: $Manifest" }
 $manifestFile = Get-Item $Manifest
@@ -44,6 +46,10 @@ foreach ($pkg in $packages) {
     $actual = (Get-FileHash -Path $target -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($PrepareHash) {
         Write-Host "[HASH] $($pkg.id) $actual"
+        if ($FreezeHash) {
+            $pkg.sha256 = $actual
+            Write-Step "已在当前工作区冻结 $($pkg.id) SHA256"
+        }
         continue
     }
 
@@ -73,4 +79,10 @@ foreach ($pkg in $packages) {
     }
 }
 
-Write-Step ($PrepareHash ? '哈希准备完成；请固定清单后再执行生产安装。' : '依赖处理完成。')
+if ($PrepareHash -and $FreezeHash) {
+    $json = $config | ConvertTo-Json -Depth 10
+    [IO.File]::WriteAllText($manifestFile.FullName, $json + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+    Write-Step "已写回临时发布清单: $($manifestFile.FullName)"
+}
+
+Write-Step ($PrepareHash ? ($FreezeHash ? '哈希准备并冻结完成。' : '哈希准备完成；请固定清单后再执行生产安装。') : '依赖处理完成。')
