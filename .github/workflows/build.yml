@@ -83,6 +83,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           path: release-artifacts
@@ -109,16 +112,31 @@ jobs:
           cp release-artifacts/myusbip-windows-bundles/MyUsbIP-Server-win-x64.zip .
           cp release-artifacts/myusbip-windows-bundles/MyUsbIP-Client-win-x64.zip .
           cp release-artifacts/myusbip-windows-bundles/checksums.sha256 .
-      - name: Create GitHub Release
+      - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release_tag.outputs.tag }}
-        run: >-
-          gh release create "$RELEASE_TAG"
-          MyUsbIP-Server-win-x64.zip
-          MyUsbIP-Client-win-x64.zip
-          myusbip-linux-x64.zip
-          checksums.sha256
-          --target "$GITHUB_SHA"
-          --generate-notes
-          --title "MyUsbIP $RELEASE_TAG"
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG 已存在，补充/覆盖附件。"
+            gh release upload "$RELEASE_TAG" \
+              MyUsbIP-Server-win-x64.zip \
+              MyUsbIP-Client-win-x64.zip \
+              myusbip-linux-x64.zip \
+              checksums.sha256 \
+              --clobber \
+              --repo "$GH_REPO"
+          else
+            gh release create "$RELEASE_TAG" \
+              MyUsbIP-Server-win-x64.zip \
+              MyUsbIP-Client-win-x64.zip \
+              myusbip-linux-x64.zip \
+              checksums.sha256 \
+              --repo "$GH_REPO" \
+              --target "$GITHUB_SHA" \
+              --generate-notes \
+              --title "MyUsbIP $RELEASE_TAG"
+          fi
