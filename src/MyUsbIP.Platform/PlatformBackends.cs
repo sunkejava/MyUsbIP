@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 using MyUsbIP.Abstractions;
 
@@ -37,6 +38,8 @@ internal sealed class UsbIpProcessRunner(IUsbIpEventSink sink, TimeSpan timeout)
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
                 CreateNoWindow = true,
             },
             EnableRaisingEvents = true,
