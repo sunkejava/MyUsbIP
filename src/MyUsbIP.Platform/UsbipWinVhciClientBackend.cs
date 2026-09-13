@@ -118,6 +118,31 @@ public sealed class UsbipWinVhciClientBackend : IUsbIpClientBackend
             cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// 查询 usbip-win2 UDE/VHCI 当前已经导入的设备，等价于 usbip port [number]。
+    /// 保留上游原始文本，便于直接查看 hostname、service、busid、remote bus/dev、serial 与 receive mode。
+    /// </summary>
+    public async Task<string> GetPortOutputAsync(int? localPort = null, CancellationToken cancellationToken = default)
+    {
+        var arguments = localPort is null
+            ? "port"
+            : $"port {localPort.Value.ToString(CultureInfo.InvariantCulture)}";
+        var result = await commandRunner.RunAsync(
+            usbipPath,
+            arguments,
+            "client.port.list",
+            null,
+            null,
+            cancellationToken).ConfigureAwait(false);
+
+        var output = result.StandardOutput.Trim();
+        if (!string.IsNullOrWhiteSpace(result.StandardError))
+            output = string.IsNullOrWhiteSpace(output)
+                ? result.StandardError.Trim()
+                : output + Environment.NewLine + result.StandardError.Trim();
+        return string.IsNullOrWhiteSpace(output) ? "当前没有已导入的 USB/IP 设备。" : output;
+    }
+
     private async Task<int?> TryResolveLocalPortAsync(
         string host,
         string busId,
