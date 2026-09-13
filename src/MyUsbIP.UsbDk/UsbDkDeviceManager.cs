@@ -26,30 +26,10 @@ public sealed class UsbDkDeviceManager : IDisposable
             devices[info.BusId] = info;
         }
 
-        // UsbDk_StartRedirect 后，部分设备可能暂时/持续不再出现在 UsbDk_GetDevicesList 中，
-        // 因此必须保留 Redirect 快照以支持 CH340/UKey detach 后再次 IMPORT。
-        // 物理拔出判断必须使用 DeviceId + InstanceId 组成的完整 PnP InstanceId；
-        // UsbDk 的 InstanceId 可能只有 "4" 这类片段，直接传给 CM_Locate_DevNodeW 会把在线设备误判为已拔出。
-        foreach (var pair in redirected.ToArray())
+        // UsbDk_StartRedirect 后，部分设备可能暂时/持续不再出现在 UsbDk_GetDevicesList 中。
+        // 不能因此让已经被服务端捕获的 CH340/UKey 从 DEVLIST 消失，否则 detach 后无法再次 IMPORT。
+        foreach (var pair in redirected)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (!WindowsDevicePresence.IsPresent(pair.Value.Native.Id.DeviceId, pair.Value.Native.Id.InstanceId))
-            {
-                if (redirected.TryRemove(pair.Key, out var removed))
-                {
-                    foreach (var key in pendingEndpoints.Keys
-                                 .Where(x => string.Equals(x.BusId, pair.Key, StringComparison.OrdinalIgnoreCase))
-                                 .ToArray())
-                        pendingEndpoints.TryRemove(key, out _);
-
-                    try { removed.Dispose(); }
-                    catch { /* 设备已经物理消失，StopRedirect 失败不应阻断设备列表刷新。 */ }
-                }
-                devices.Remove(pair.Key);
-                continue;
-            }
-
             var info = ToDeviceInfo(pair.Value.Native) with { State = UsbIpDeviceState.Shared };
             devices[pair.Key] = info;
         }
@@ -258,37 +238,16 @@ public sealed class UsbDkDeviceManager : IDisposable
     private UsbIpDeviceInfo ToDeviceInfo(UsbDkDeviceInfoNative native)
     {
         var busId = GetBusId(native);
-        var fullInstanceId = WindowsDevicePresence.BuildFullInstanceId(native.Id.DeviceId, native.Id.InstanceId);
         return new UsbIpDeviceInfo
         {
             BusId = busId,
-            InstanceId = fullInstanceId,
-            Path = fullInstanceId,
-            BusNumber = unchecked((uint)native.FilterId),
-            DeviceNumber = unchecked((uint)native.Port),
-            Speed = MapUsbDkSpeed(native.Speed),
+            InstanceId = native.Id.InstanceId,
             VendorId = native.DeviceDescriptor.VendorId,
             ProductId = native.DeviceDescriptor.ProductId,
-            UsbVersion = native.DeviceDescriptor.BcdUsb,
-            DeviceVersion = native.DeviceDescriptor.BcdDevice,
-            DeviceClass = native.DeviceDescriptor.DeviceClass,
-            DeviceSubClass = native.DeviceDescriptor.DeviceSubClass,
-            DeviceProtocol = native.DeviceDescriptor.DeviceProtocol,
-            ConfigurationCount = native.DeviceDescriptor.NumberConfigurations == 0 ? (byte)1 : native.DeviceDescriptor.NumberConfigurations,
             Product = native.Id.DeviceId,
             State = redirected.ContainsKey(busId) ? UsbIpDeviceState.Shared : UsbIpDeviceState.Available,
         };
     }
-
-    private static uint MapUsbDkSpeed(ulong speed) => speed switch
-    {
-        1 => 1,
-        2 => 2,
-        3 => 3,
-        4 => 5,
-        5 => 6,
-        _ => 0,
-    };
 
     private static string GetBusId(UsbDkDeviceInfoNative native)
         => $"{unchecked((uint)native.FilterId):X8}-{unchecked((uint)native.Port):X8}";

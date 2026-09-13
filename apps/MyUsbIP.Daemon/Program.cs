@@ -68,7 +68,7 @@ if (string.Equals(config.BackendMode, "UsbDkUsbipWin", StringComparison.OrdinalI
             ? IPAddress.Any
             : IPAddress.Parse(config.NativeServer.ListenAddress);
         nativeServer = new UsbIpNativeServer(
-            new RecoveringUsbDkExportTransport(usbDkManager),
+            new UsbDkExportTransport(usbDkManager),
             address,
             config.NativeServer.Port,
             sink,
