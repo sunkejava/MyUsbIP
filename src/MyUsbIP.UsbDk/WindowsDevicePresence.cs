@@ -26,7 +26,7 @@ internal static class WindowsDevicePresence
         var instance = instanceId?.Trim().TrimStart('\\');
 
         if (string.IsNullOrWhiteSpace(instance)) return string.IsNullOrWhiteSpace(device) ? null : device;
-        if (instance.Contains('\\', StringComparison.Ordinal)) return instance;
+        if (instance.Contains('\\')) return instance;
         if (string.IsNullOrWhiteSpace(device)) return instance;
         return $"{device}\\{instance}";
     }
