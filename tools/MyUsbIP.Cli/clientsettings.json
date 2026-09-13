@@ -6,5 +6,6 @@
   },
   "CommandTimeoutSeconds": 15,
   "AttachTimeoutSeconds": 120,
-  "ReceiveMode": "zero-copy"
+  "ReceiveMode": "zero-copy",
+  "UsbIdsPath": ""
 }
