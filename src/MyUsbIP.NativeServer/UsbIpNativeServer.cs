@@ -174,11 +174,23 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
                 await transport.BeginSessionAsync(importedBusId, cancellationToken).ConfigureAwait(false);
                 sessionStarted = true;
             }
-            catch (InvalidOperationException ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                await UsbIpWire.WriteImportFailureAsync(stream, 1, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await UsbIpWire.WriteImportFailureAsync(stream, 1, cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // 连接已被客户端关闭时仍保留原始 Redirect 异常日志。
+                }
+
                 await eventSink.WriteAsync(new(DateTimeOffset.Now, "native.import.rejected", "Warning", sessionId,
-                    importedBusId, remote, ex.Message), CancellationToken.None);
+                    importedBusId, remote, ex.Message, new Dictionary<string, object?>
+                    {
+                        ["clientAddress"] = remoteAddress,
+                        ["exceptionType"] = ex.GetType().FullName,
+                    }, ex), CancellationToken.None);
                 return;
             }
 
@@ -366,7 +378,6 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
         {
             sessionCts.Cancel();
 
-            // 连接中断时主动 Abort 所有尚未完成的 UsbDk 请求，避免异步 I/O 阻止会话清理。
             var sequences = pending.Keys.ToArray();
             foreach (var sequence in sequences)
             {
