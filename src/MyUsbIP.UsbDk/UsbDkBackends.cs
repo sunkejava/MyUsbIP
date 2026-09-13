@@ -48,6 +48,13 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
     public async Task<IReadOnlyList<UsbIpDeviceInfo>> ListAsync(CancellationToken cancellationToken = default)
     {
         var devices = await manager.ListAsync(cancellationToken).ConfigureAwait(false);
+
+        // 物理拔出后 UsbDkDeviceManager 会清理 Redirect 快照。
+        // 同时释放该 BUSID 的会话占用标记，避免设备重新插入同一端口后仍被旧会话判定为 Busy。
+        var presentBusIds = devices.Select(x => x.BusId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var busId in activeSessions.Keys.Where(x => !presentBusIds.Contains(x)).ToArray())
+            activeSessions.TryRemove(busId, out _);
+
         var speeds = ReadNativeSpeeds();
         return devices.Select(x => DecorateWireMetadata(
             x,
@@ -167,34 +174,37 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
     private static UsbIpDeviceInfo DecorateWireMetadata(UsbIpDeviceInfo device, bool attached, uint speed,
         DescriptorMetadata descriptor)
     {
-        uint busNumber = 0;
-        uint deviceNumber = 0;
-        var parts = device.BusId.Split('-', 2, StringSplitOptions.TrimEntries);
-        if (parts.Length == 2)
+        uint busNumber = device.BusNumber;
+        uint deviceNumber = device.DeviceNumber;
+        if (busNumber == 0 && deviceNumber == 0)
         {
-            _ = uint.TryParse(parts[0], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out busNumber);
-            _ = uint.TryParse(parts[1], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out deviceNumber);
+            var parts = device.BusId.Split('-', 2, StringSplitOptions.TrimEntries);
+            if (parts.Length == 2)
+            {
+                _ = uint.TryParse(parts[0], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out busNumber);
+                _ = uint.TryParse(parts[1], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out deviceNumber);
+            }
         }
 
-        var interfaces = descriptor.InterfaceItems ?? Array.Empty<UsbIpInterfaceInfo>();
+        var interfaces = descriptor.InterfaceItems ?? device.Interfaces;
         var interfaceCount = descriptor.InterfaceCount;
         if (interfaceCount == 0 && interfaces.Count > 0)
             interfaceCount = checked((byte)Math.Min(byte.MaxValue, interfaces.Count));
 
         return device with
         {
-            Path = device.InstanceId ?? device.BusId,
+            Path = device.Path ?? device.InstanceId ?? device.BusId,
             BusNumber = busNumber,
             DeviceNumber = deviceNumber,
             Speed = speed,
             State = attached ? UsbIpDeviceState.Attached : device.State,
-            UsbVersion = descriptor.UsbVersion,
-            DeviceVersion = descriptor.DeviceVersion,
+            UsbVersion = descriptor.UsbVersion == 0 ? device.UsbVersion : descriptor.UsbVersion,
+            DeviceVersion = descriptor.DeviceVersion == 0 ? device.DeviceVersion : descriptor.DeviceVersion,
             DeviceClass = descriptor.DeviceClass,
             DeviceSubClass = descriptor.DeviceSubClass,
             DeviceProtocol = descriptor.DeviceProtocol,
-            ConfigurationCount = descriptor.ConfigurationCount == 0 ? (byte)1 : descriptor.ConfigurationCount,
-            ConfigurationValue = descriptor.ConfigurationValue == 0 ? (byte)1 : descriptor.ConfigurationValue,
+            ConfigurationCount = descriptor.ConfigurationCount == 0 ? device.ConfigurationCount : descriptor.ConfigurationCount,
+            ConfigurationValue = descriptor.ConfigurationValue == 0 ? device.ConfigurationValue : descriptor.ConfigurationValue,
             InterfaceCount = interfaceCount,
             Interfaces = interfaces,
         };
