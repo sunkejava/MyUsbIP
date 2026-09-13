@@ -68,8 +68,6 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
 
         try
         {
-            // UsbDk 对部分 USB 串口设备（包括部分 CH340 类设备）执行 StopRedirect 后，
-            // 再次 StartRedirect 可能失败或长时间阻塞。因此 Redirect 句柄作为服务端设备捕获生命周期保留。
             await manager.ShareAsync(busId, cancellationToken).ConfigureAwait(false);
             manager.MarkSessionActive(busId);
         }
@@ -81,11 +79,42 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
         }
     }
 
+    /// <summary>
+    /// USB/IP 会话结束后必须真正停止 UsbDk Redirect，把设备归还 Windows 原驱动栈。
+    ///
+    /// 旧实现为了规避部分 USB 串口设备二次 StartRedirect 的 UsbDk 已知问题，长期保留 Redirect 句柄并调用
+    /// UsbDk_ResetDevice。该策略会让设备在服务端继续以 UsbDk device/重定向驱动形态存在，并且 ResetDevice
+    /// 可能触发端口复位、PnP 重建以及后续枚举抖动，表现为 detach 后驱动类型变化或设备偶发消失。
+    ///
+    /// 新策略：结束会话 -> StopRedirect -> 等待 Windows 原驱动重新绑定且 UsbDk 原生枚举连续稳定 -> 才完成释放。
+    /// 这样下一次 IMPORT 从一个正常的宿主驱动状态重新执行 StartRedirect，避免在尚未完成 PnP 回绑时立即二次捕获。
+    /// </summary>
     public async Task EndSessionAsync(string busId, CancellationToken cancellationToken = default)
     {
         activeSessions.TryRemove(busId, out _);
-        manager.MarkSessionInactive(busId);
-        await manager.ResetAsync(busId, cancellationToken).ConfigureAwait(false);
+
+        UsbIpDeviceInfo? releasedDevice = null;
+        try
+        {
+            releasedDevice = (await manager.ListAsync(CancellationToken.None).ConfigureAwait(false))
+                .FirstOrDefault(x => string.Equals(x.BusId, busId, StringComparison.OrdinalIgnoreCase));
+        }
+        catch
+        {
+            // 保存身份仅用于释放后的稳定性等待；读取失败不能阻止真正 StopRedirect。
+        }
+
+        try
+        {
+            await manager.UnshareAsync(busId, CancellationToken.None).ConfigureAwait(false);
+
+            if (releasedDevice is not null)
+                await WaitForHostDriverRebindAsync(releasedDevice, CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            manager.MarkSessionInactive(busId);
+        }
     }
 
     public Task<UsbIpSubmitCompletion> SubmitAsync(string busId, UsbIpSubmitRequest request, CancellationToken cancellationToken = default)
@@ -102,6 +131,57 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
     {
         cancellationToken.ThrowIfCancellationRequested();
         return Task.FromResult(manager.GetDescriptorSet(busId));
+    }
+
+    /// <summary>
+    /// StopRedirect 返回后 Windows 仍需要一小段时间重新加载设备原驱动。
+    /// 对 CH340/智能卡/UKey 这类驱动启动较慢的设备，立即再次 StartRedirect 容易命中 UsbDk 二次重定向失败。
+    /// 这里要求同一物理身份连续三次出现在 UsbDk 原生列表中，再认为宿主驱动/PnP 已稳定。
+    /// </summary>
+    private async Task WaitForHostDriverRebindAsync(UsbIpDeviceInfo releasedDevice, CancellationToken cancellationToken)
+    {
+        const int maxAttempts = 32;      // 最长约 8 秒
+        const int requiredStableHits = 3;
+        var stableHits = 0;
+
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Delay(250, cancellationToken).ConfigureAwait(false);
+
+            IReadOnlyList<UsbIpDeviceInfo> devices;
+            try
+            {
+                devices = await manager.ListAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                stableHits = 0;
+                continue;
+            }
+
+            var rebound = devices.Any(x =>
+                x.State != UsbIpDeviceState.Attached &&
+                x.VendorId == releasedDevice.VendorId &&
+                x.ProductId == releasedDevice.ProductId &&
+                string.Equals(x.Product, releasedDevice.Product, StringComparison.OrdinalIgnoreCase) &&
+                (string.IsNullOrWhiteSpace(releasedDevice.InstanceId) ||
+                 string.Equals(x.InstanceId, releasedDevice.InstanceId, StringComparison.OrdinalIgnoreCase)));
+
+            if (rebound)
+            {
+                stableHits++;
+                if (stableHits >= requiredStableHits) return;
+            }
+            else
+            {
+                stableHits = 0;
+            }
+        }
+
+        throw new TimeoutException(
+            $"设备 {releasedDevice.BusId} 已停止 UsbDk Redirect，但等待 Windows 原驱动重新绑定超时。" +
+            $" VID:PID={releasedDevice.VidPid}, InstanceId={releasedDevice.InstanceId ?? "<null>"}。 ");
     }
 
     private DescriptorMetadata TryReadDescriptorMetadata(string busId)
