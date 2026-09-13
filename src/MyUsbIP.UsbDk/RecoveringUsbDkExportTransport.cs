@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using MyUsbIP.Abstractions;
 using MyUsbIP.NativeServer;
+using MyUsbIP.Protocol;
 
 namespace MyUsbIP.UsbDk;
 
@@ -35,7 +36,7 @@ public sealed class RecoveringUsbDkExportTransport : IUsbIpExportTransport, IUsb
             await inner.BeginSessionAsync(busId, cancellationToken).ConfigureAwait(false);
             return;
         }
-        catch (Exception firstException)
+        catch (Exception firstException) when (firstException is not OperationCanceledException)
         {
             var requested = await inner.FindAsync(busId, cancellationToken).ConfigureAwait(false);
             if (!IsCh340(requested)) throw;
@@ -65,7 +66,7 @@ public sealed class RecoveringUsbDkExportTransport : IUsbIpExportTransport, IUsb
             {
                 await inner.BeginSessionAsync(recovered.BusId, cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception retryException)
+            catch (Exception retryException) when (retryException is not OperationCanceledException)
             {
                 throw new InvalidOperationException(
                     $"CH340 Redirect 自动恢复失败：原 BUSID={busId}，重新枚举 BUSID={recovered.BusId}，InstanceId={fullInstanceId}",
