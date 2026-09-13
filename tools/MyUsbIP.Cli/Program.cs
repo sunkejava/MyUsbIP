@@ -42,7 +42,8 @@ if (OperatingSystem.IsWindows())
         eventSink: sink,
         commandTimeout: timeout,
         attachTimeout: attachTimeout,
-        receiveMode: config.ReceiveMode);
+        receiveMode: config.ReceiveMode,
+        usbIdsPath: config.UsbIdsPath);
     clientBackend = windowsClientBackend;
 }
 else
@@ -71,6 +72,7 @@ try
             ["commandTimeoutSeconds"] = config.CommandTimeoutSeconds,
             ["attachTimeoutSeconds"] = config.AttachTimeoutSeconds,
             ["receiveMode"] = config.ReceiveMode,
+            ["usbIdsPath"] = config.UsbIdsPath,
         }));
 
     switch (args[0].ToLowerInvariant())
@@ -118,7 +120,7 @@ async Task HandleServerAsync(string[] command)
         case "watch":
             var monitor = new UsbIpDeviceMonitor(server, sink);
             await foreach (var change in monitor.WatchAsync())
-                Console.WriteLine($"{change.OccurredAt:HH:mm:ss} {change.Kind,-7} {change.Device.BusId,-20} {change.Device.VidPid} {change.Device.Product}");
+                Console.WriteLine($"{change.OccurredAt:HH:mm:ss} {change.Kind,-7} {change.Device.BusId,-20} {change.Device.VidPid} {FormatDisplayName(change.Device)}");
             break;
         case "diag":
             await PrintReportAsync(await diagnostics.CheckServerAsync());
@@ -188,10 +190,10 @@ async Task HandleClientAsync(string[] command)
 
 static void PrintDevices(IReadOnlyList<UsbIpDeviceInfo> devices)
 {
-    Console.WriteLine($"{"BUSID",-20} {"VID:PID",-10} {"STATE",-10} {"SPEED",-10} {"CONNECTED BY",-20} PRODUCT");
+    Console.WriteLine($"{"BUSID",-20} {"VID:PID",-10} {"STATE",-10} {"SPEED",-10} {"CONNECTED BY",-20} DEVICE");
     foreach (var d in devices)
     {
-        Console.WriteLine($"{d.BusId,-20} {d.VidPid,-10} {d.State,-10} {FormatSpeed(d.Speed),-10} {(d.ClientAddress ?? "-"),-20} {d.Product}");
+        Console.WriteLine($"{d.BusId,-20} {d.VidPid,-10} {d.State,-10} {FormatSpeed(d.Speed),-10} {(d.ClientAddress ?? "-"),-20} {FormatDisplayName(d)}");
         Console.WriteLine($"  bus/dev={d.BusNumber}/{d.DeviceNumber} usb={FormatBcd(d.UsbVersion)} device={FormatBcd(d.DeviceVersion)} class={d.DeviceClass:X2}/{d.DeviceSubClass:X2}/{d.DeviceProtocol:X2} configs={d.ConfigurationCount} config={d.ConfigurationValue} interfaces={d.InterfaceCount}");
         for (var i = 0; i < d.Interfaces.Count; i++)
         {
@@ -203,6 +205,13 @@ static void PrintDevices(IReadOnlyList<UsbIpDeviceInfo> devices)
         if (d.ConnectedAt is not null || !string.IsNullOrWhiteSpace(d.SessionId))
             Console.WriteLine($"  connectedAt={d.ConnectedAt:yyyy-MM-dd HH:mm:ss zzz} session={d.SessionId ?? "-"}");
     }
+}
+
+static string FormatDisplayName(UsbIpDeviceInfo device)
+{
+    var manufacturer = string.IsNullOrWhiteSpace(device.Manufacturer) ? null : device.Manufacturer.Trim();
+    var product = string.IsNullOrWhiteSpace(device.Product) ? $"USB device {device.ProductId:X4}" : device.Product.Trim();
+    return manufacturer is null ? product : $"{manufacturer} : {product}";
 }
 
 static string FormatSpeed(uint speed) => speed switch
@@ -252,6 +261,7 @@ static void PrintHelp()
 internal sealed record ClientCliConfig
 {
     public string UsbipWinPath { get; init; } = "usbip.exe";
+    public string UsbIdsPath { get; init; } = string.Empty;
     public int CommandTimeoutSeconds { get; init; } = 15;
     public int AttachTimeoutSeconds { get; init; } = 120;
     public string ReceiveMode { get; init; } = "zero-copy";
