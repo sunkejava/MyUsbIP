@@ -33,14 +33,22 @@ var timeout = TimeSpan.FromSeconds(Math.Max(1, config.CommandTimeoutSeconds));
 var attachTimeout = TimeSpan.FromSeconds(Math.Max(config.CommandTimeoutSeconds, config.AttachTimeoutSeconds));
 var backendObject = UsbIpBackendFactory.CreateDefault(sink, timeout);
 var serverBackend = (IUsbIpServerBackend)backendObject;
-IUsbIpClientBackend clientBackend = OperatingSystem.IsWindows()
-    ? new UsbipWinVhciClientBackend(
+UsbipWinVhciClientBackend? windowsClientBackend = null;
+IUsbIpClientBackend clientBackend;
+if (OperatingSystem.IsWindows())
+{
+    windowsClientBackend = new UsbipWinVhciClientBackend(
         usbipPath: config.UsbipWinPath,
         eventSink: sink,
         commandTimeout: timeout,
         attachTimeout: attachTimeout,
-        receiveMode: config.ReceiveMode)
-    : (IUsbIpClientBackend)backendObject;
+        receiveMode: config.ReceiveMode);
+    clientBackend = windowsClientBackend;
+}
+else
+{
+    clientBackend = (IUsbIpClientBackend)backendObject;
+}
 
 var server = new MyUsbIpServer(serverBackend, sink);
 var client = new MyUsbIpClient(clientBackend, sink);
@@ -128,6 +136,22 @@ async Task HandleClientAsync(string[] command)
         case "list" when command.Length >= 2:
             PrintDevices(await client.GetRemoteDevicesAsync(command[1]));
             break;
+        case "port":
+        {
+            if (windowsClientBackend is null)
+                throw new PlatformNotSupportedException("myusbip client port 当前仅支持 Windows usbip-win2 UDE/VHCI。 ");
+
+            int? localPort = null;
+            if (command.Length >= 2)
+            {
+                if (!int.TryParse(command[1], out var parsedPort) || parsedPort <= 0)
+                    throw new ArgumentException("本地端口必须是大于 0 的整数。示例：myusbip client port 1");
+                localPort = parsedPort;
+            }
+
+            Console.WriteLine(await windowsClientBackend.GetPortOutputAsync(localPort));
+            break;
+        }
         case "attach" when command.Length >= 3:
         {
             await sink.WriteAsync(new UsbIpEvent(DateTimeOffset.Now, "client.attach.request", "Information", null,
@@ -218,6 +242,7 @@ static void PrintHelp()
     Console.WriteLine("  myusbip server watch");
     Console.WriteLine("  myusbip server diag");
     Console.WriteLine("  myusbip client list <host>");
+    Console.WriteLine("  myusbip client port [local-port]");
     Console.WriteLine("  myusbip client attach <host> <busid>");
     Console.WriteLine("  myusbip client detach <local-port>");
     Console.WriteLine("  myusbip client diag");
