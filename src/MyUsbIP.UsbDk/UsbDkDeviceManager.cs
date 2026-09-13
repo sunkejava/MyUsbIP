@@ -28,12 +28,13 @@ public sealed class UsbDkDeviceManager : IDisposable
 
         // UsbDk_StartRedirect 后，部分设备可能暂时/持续不再出现在 UsbDk_GetDevicesList 中，
         // 因此必须保留 Redirect 快照以支持 CH340/UKey detach 后再次 IMPORT。
-        // 但物理拔出后 Windows PnP 节点会消失；此时不能继续把旧快照暴露给 DEVLIST。
+        // 物理拔出判断必须使用 DeviceId + InstanceId 组成的完整 PnP InstanceId；
+        // UsbDk 的 InstanceId 可能只有 "4" 这类片段，直接传给 CM_Locate_DevNodeW 会把在线设备误判为已拔出。
         foreach (var pair in redirected.ToArray())
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (!WindowsDevicePresence.IsPresent(pair.Value.Native.Id.InstanceId))
+            if (!WindowsDevicePresence.IsPresent(pair.Value.Native.Id.DeviceId, pair.Value.Native.Id.InstanceId))
             {
                 if (redirected.TryRemove(pair.Key, out var removed))
                 {
@@ -257,11 +258,12 @@ public sealed class UsbDkDeviceManager : IDisposable
     private UsbIpDeviceInfo ToDeviceInfo(UsbDkDeviceInfoNative native)
     {
         var busId = GetBusId(native);
+        var fullInstanceId = WindowsDevicePresence.BuildFullInstanceId(native.Id.DeviceId, native.Id.InstanceId);
         return new UsbIpDeviceInfo
         {
             BusId = busId,
-            InstanceId = native.Id.InstanceId,
-            Path = native.Id.InstanceId,
+            InstanceId = fullInstanceId,
+            Path = fullInstanceId,
             BusNumber = unchecked((uint)native.FilterId),
             DeviceNumber = unchecked((uint)native.Port),
             Speed = MapUsbDkSpeed(native.Speed),
