@@ -7,8 +7,8 @@ namespace MyUsbIP.UsbDk;
 
 /// <summary>
 /// UsbDk ExportTransport 恢复装饰器。
-/// CH340 在历史 StopRedirect/驱动重新绑定后可能进入 UsbDk_StartRedirect 暂时失败状态；
-/// 首次失败时触发一次安全 PnP 重新枚举，重新定位同一 PnP 实例后再尝试 Redirect。
+/// CH340 在 UsbDk_StartRedirect 失败后，触发父 USB Hub 的 PnP 重新枚举，
+/// 重新定位同一 PnP 实例后再次尝试 Redirect。
 /// 若 UsbDk FilterId 因重新枚举发生变化，使用会话别名把客户端请求的旧 BUSID 映射到新 BUSID。
 /// </summary>
 public sealed class RecoveringUsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptorProvider
@@ -42,15 +42,17 @@ public sealed class RecoveringUsbDkExportTransport : IUsbIpExportTransport, IUsb
             if (!IsCh340(requested)) throw;
 
             var fullInstanceId = requested!.InstanceId;
-            if (!WindowsDeviceRecovery.TryReenumerate(fullInstanceId))
+            if (!WindowsDeviceRecovery.TryReenumerate(fullInstanceId, out var recoveryDetail))
                 throw new InvalidOperationException(
-                    $"CH340 {busId} UsbDk_StartRedirect 失败，PnP 重新枚举也未成功。InstanceId={fullInstanceId}",
+                    $"CH340 {busId} UsbDk_StartRedirect 失败，父 USB Hub PnP 重新枚举也未成功。" +
+                    $"InstanceId={fullInstanceId}；Recovery={recoveryDetail}",
                     firstException);
 
             UsbIpDeviceInfo? recovered = null;
-            for (var attempt = 0; attempt < 12 && !cancellationToken.IsCancellationRequested; attempt++)
+            // USB Hub 重新枚举及 UsbDk Filter 重新建立并非瞬时完成，最多等待约 5 秒。
+            for (var attempt = 0; attempt < 20 && !cancellationToken.IsCancellationRequested; attempt++)
             {
-                await Task.Delay(attempt == 0 ? 300 : 200, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(attempt == 0 ? 400 : 250, cancellationToken).ConfigureAwait(false);
                 var devices = await manager.ListAsync(cancellationToken).ConfigureAwait(false);
                 recovered = devices.FirstOrDefault(x =>
                     string.Equals(x.InstanceId, fullInstanceId, StringComparison.OrdinalIgnoreCase) && IsCh340(x));
@@ -59,7 +61,8 @@ public sealed class RecoveringUsbDkExportTransport : IUsbIpExportTransport, IUsb
 
             if (recovered is null)
                 throw new InvalidOperationException(
-                    $"CH340 {busId} PnP 重新枚举后未重新出现在 UsbDk 列表。InstanceId={fullInstanceId}",
+                    $"CH340 {busId} 父 USB Hub PnP 重新枚举已提交，但设备未在等待窗口内重新出现在 UsbDk 列表。" +
+                    $"InstanceId={fullInstanceId}；Recovery={recoveryDetail}",
                     firstException);
 
             try
@@ -69,7 +72,8 @@ public sealed class RecoveringUsbDkExportTransport : IUsbIpExportTransport, IUsb
             catch (Exception retryException) when (retryException is not OperationCanceledException)
             {
                 throw new InvalidOperationException(
-                    $"CH340 Redirect 自动恢复失败：原 BUSID={busId}，重新枚举 BUSID={recovered.BusId}，InstanceId={fullInstanceId}",
+                    $"CH340 Redirect 自动恢复失败：原 BUSID={busId}，重新枚举 BUSID={recovered.BusId}，" +
+                    $"InstanceId={fullInstanceId}；Recovery={recoveryDetail}",
                     new AggregateException(firstException, retryException));
             }
 
