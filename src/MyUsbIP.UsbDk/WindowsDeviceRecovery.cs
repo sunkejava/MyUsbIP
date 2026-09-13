@@ -4,35 +4,22 @@ namespace MyUsbIP.UsbDk;
 
 /// <summary>
 /// Windows PnP 设备恢复辅助。
-/// 仅在 UsbDk_StartRedirect 首次失败且目标为已知 CH340 时使用，
-/// 通过 Configuration Manager 对目标设备执行一次禁用/启用，让 UsbDk 与原厂串口驱动重新完成 PnP 绑定。
+/// UsbDk_StartRedirect 失败后仅触发安全的 PnP 重新枚举，不主动禁用/启用设备。
 /// </summary>
 internal static class WindowsDeviceRecovery
 {
     private const uint CrSuccess = 0;
 
-    public static bool TryRestart(string? deviceId, string? instanceId, out string? fullInstanceId)
+    public static bool TryReenumerate(string? fullInstanceId)
     {
-        fullInstanceId = WindowsDevicePresence.BuildFullInstanceId(deviceId, instanceId);
         if (!OperatingSystem.IsWindows() || string.IsNullOrWhiteSpace(fullInstanceId)) return false;
-
-        if (CM_Locate_DevNodeW(out var devInst, fullInstanceId, 0) != CrSuccess)
-            return false;
-
-        var disabled = CM_Disable_DevNode(devInst, 0) == CrSuccess;
-        if (!disabled) return false;
-
-        Thread.Sleep(350);
-        var enabled = CM_Enable_DevNode(devInst, 0) == CrSuccess;
-        return enabled;
+        if (CM_Locate_DevNodeW(out var devInst, fullInstanceId, 0) != CrSuccess) return false;
+        return CM_Reenumerate_DevNode(devInst, 0) == CrSuccess;
     }
 
     [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
     private static extern uint CM_Locate_DevNodeW(out uint devInst, string deviceId, uint flags);
 
     [DllImport("cfgmgr32.dll")]
-    private static extern uint CM_Disable_DevNode(uint devInst, uint flags);
-
-    [DllImport("cfgmgr32.dll")]
-    private static extern uint CM_Enable_DevNode(uint devInst, uint flags);
+    private static extern uint CM_Reenumerate_DevNode(uint devInst, uint flags);
 }
