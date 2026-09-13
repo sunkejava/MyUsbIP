@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.ComponentModel;
 using System.Runtime.InteropServices;
 using MyUsbIP.Abstractions;
 using MyUsbIP.Protocol;
@@ -11,7 +12,8 @@ namespace MyUsbIP.UsbDk;
 public sealed class UsbDkDeviceManager : IDisposable
 {
     private readonly ConcurrentDictionary<string, RedirectedDevice> redirected = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<(string BusId, uint Sequence), ulong> pendingEndpoints = new();
+    private readonly ConcurrentDictionary<string, byte> activeSessionBusIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<(string BusId, uint Sequence), PendingTransfer> pendingTransfers = new();
     private bool disposed;
 
     public Task<IReadOnlyList<UsbIpDeviceInfo>> ListAsync(CancellationToken cancellationToken = default)
@@ -26,10 +28,45 @@ public sealed class UsbDkDeviceManager : IDisposable
             devices[info.BusId] = info;
         }
 
-        // UsbDk_StartRedirect 后，部分设备可能暂时/持续不再出现在 UsbDk_GetDevicesList 中。
-        // 不能因此让已经被服务端捕获的 CH340/UKey 从 DEVLIST 消失，否则 detach 后无法再次 IMPORT。
-        foreach (var pair in redirected)
+        // StartRedirect 后设备可能不再出现在 UsbDk_GetDevicesList 中，因此必须保留 Redirect 快照，
+        // 否则 CH340/UKey detach 后无法再次 IMPORT。
+        // 但快照不能永久存在：Hub 断电/物理拔出后，UsbDk 句柄可能仍然存在，旧实现会把幽灵设备一直返回给 DEVLIST。
+        //
+        // 注意：正在被 USB/IP 会话使用的 Redirect 绝不能因为一次 PnP 查询抖动而被清理；
+        // 只有非活动会话的 Redirect 才通过 Windows PRESENT DevNode 做物理存在性校验。
+        var needPresenceCheck = redirected.Keys.Any(x => !activeSessionBusIds.ContainsKey(x));
+        var presentUsbInstanceIds = needPresenceCheck
+            ? WindowsDevicePresence.EnumeratePresentUsbInstanceIds()
+            : Array.Empty<string>();
+
+        foreach (var pair in redirected.ToArray())
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!activeSessionBusIds.ContainsKey(pair.Key) &&
+                !WindowsDevicePresence.IsPresent(
+                    pair.Value.Native.Id.DeviceId,
+                    pair.Value.Native.Id.InstanceId,
+                    presentUsbInstanceIds))
+            {
+                if (redirected.TryRemove(pair.Key, out var removed))
+                {
+                    foreach (var pending in pendingTransfers
+                                 .Where(x => string.Equals(x.Key.BusId, pair.Key, StringComparison.OrdinalIgnoreCase))
+                                 .Select(x => x.Value)
+                                 .ToArray())
+                    {
+                        TryCancelPendingTransfer(removed, pending);
+                    }
+
+                    try { removed.Dispose(); }
+                    catch { /* 物理设备已经消失时 StopRedirect 失败不应阻断 DEVLIST 刷新。 */ }
+                }
+
+                devices.Remove(pair.Key);
+                continue;
+            }
+
             var info = ToDeviceInfo(pair.Value.Native) with { State = UsbIpDeviceState.Shared };
             devices[pair.Key] = info;
         }
@@ -57,6 +94,12 @@ public sealed class UsbDkDeviceManager : IDisposable
         return Task.CompletedTask;
     }
 
+    /// <summary>标记 Redirect 当前被真实 USB/IP 会话占用，防止 DEVLIST 查询误清理活动设备。</summary>
+    internal void MarkSessionActive(string busId) => activeSessionBusIds[busId] = 0;
+
+    /// <summary>USB/IP 会话结束后解除保护，后续 DEVLIST 可清理已经物理拔出的 Redirect。</summary>
+    internal void MarkSessionInactive(string busId) => activeSessionBusIds.TryRemove(busId, out _);
+
     /// <summary>
     /// 重置已重定向设备但保持 Redirect 句柄。
     /// 用于 USB/IP detach 后清理设备/端点状态，同时避免部分 USB 串口设备 StopRedirect 后无法二次 StartRedirect。
@@ -67,8 +110,13 @@ public sealed class UsbDkDeviceManager : IDisposable
         cancellationToken.ThrowIfCancellationRequested();
         if (!redirected.TryGetValue(busId, out var device)) return Task.CompletedTask;
 
-        foreach (var key in pendingEndpoints.Keys.Where(x => string.Equals(x.BusId, busId, StringComparison.OrdinalIgnoreCase)).ToArray())
-            pendingEndpoints.TryRemove(key, out _);
+        foreach (var pending in pendingTransfers
+                     .Where(x => string.Equals(x.Key.BusId, busId, StringComparison.OrdinalIgnoreCase))
+                     .Select(x => x.Value)
+                     .ToArray())
+        {
+            TryCancelPendingTransfer(device, pending);
+        }
 
         if (!UsbDkNative.UsbDk_ResetDevice(device.Handle))
             UsbDkNative.ThrowLastWin32($"UsbDk_ResetDevice({busId}) 失败");
@@ -79,6 +127,7 @@ public sealed class UsbDkDeviceManager : IDisposable
     public Task UnshareAsync(string busId, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        activeSessionBusIds.TryRemove(busId, out _);
         if (!redirected.TryRemove(busId, out var device)) return Task.CompletedTask;
         device.Dispose();
         return Task.CompletedTask;
@@ -93,14 +142,18 @@ public sealed class UsbDkDeviceManager : IDisposable
         return Task.Run(() => SubmitCore(device, busId, request, cancellationToken), cancellationToken);
     }
 
+    /// <summary>
+    /// USB/IP UNLINK 只取消指定 Sequence 对应的 OVERLAPPED I/O。
+    /// 旧实现使用 UsbDk_AbortPipe + ResetPipe，会把同一端点上其它挂起 URB 一并清掉；
+    /// CH340 Bulk-IN 通常同时挂多个读取，这会直接造成串口回包随机丢失。
+    /// </summary>
     public Task CancelAsync(string busId, uint sequence, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!redirected.TryGetValue(busId, out var device)) return Task.CompletedTask;
-        if (!pendingEndpoints.TryRemove((busId, sequence), out var endpoint)) return Task.CompletedTask;
+        if (!pendingTransfers.TryGetValue((busId, sequence), out var pending)) return Task.CompletedTask;
 
-        UsbDkNative.UsbDk_AbortPipe(device.Handle, endpoint);
-        UsbDkNative.UsbDk_ResetPipe(device.Handle, endpoint);
+        TryCancelPendingTransfer(device, pending);
         return Task.CompletedTask;
     }
 
@@ -128,7 +181,11 @@ public sealed class UsbDkDeviceManager : IDisposable
             Array.Empty<byte>());
     }
 
-    private UsbIpSubmitCompletion SubmitCore(RedirectedDevice device, string busId, UsbIpSubmitRequest request, CancellationToken cancellationToken)
+    private UsbIpSubmitCompletion SubmitCore(
+        RedirectedDevice device,
+        string busId,
+        UsbIpSubmitRequest request,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -151,6 +208,8 @@ public sealed class UsbDkDeviceManager : IDisposable
         var overlappedPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NativeOverlappedData>());
         var requestPtr = Marshal.AllocHGlobal(Marshal.SizeOf<UsbDkTransferRequest>());
         var pendingKey = (busId, request.Sequence);
+        var pending = new PendingTransfer(endpoint, overlappedPtr);
+
         try
         {
             if (bufferLength > 0) Marshal.Copy(new byte[bufferLength], 0, buffer, bufferLength);
@@ -176,21 +235,40 @@ public sealed class UsbDkDeviceManager : IDisposable
                 TransferType = (ulong)transferType,
             }, requestPtr, false);
 
-            pendingEndpoints[pendingKey] = endpoint;
-            var result = request.Direction != 0
-                ? UsbDkNative.UsbDk_ReadPipe(device.Handle, requestPtr, overlappedPtr)
-                : UsbDkNative.UsbDk_WritePipe(device.Handle, requestPtr, overlappedPtr);
+            pendingTransfers[pendingKey] = pending;
+
+            UsbDkTransferResult result;
+            lock (pending.SyncRoot)
+            {
+                if (pending.CancellationRequested)
+                    return CreateCancelledCompletion(request);
+
+                pending.IoStarted = true;
+                result = request.Direction != 0
+                    ? UsbDkNative.UsbDk_ReadPipe(device.Handle, requestPtr, overlappedPtr)
+                    : UsbDkNative.UsbDk_WritePipe(device.Handle, requestPtr, overlappedPtr);
+            }
 
             if (result == UsbDkTransferResult.SuccessAsync)
             {
                 var systemHandle = UsbDkNative.UsbDk_GetRedirectorSystemHandle(device.Handle);
                 if (systemHandle == 0 || systemHandle == UsbDkNative.InvalidHandleValue)
                     throw new IOException("UsbDk_GetRedirectorSystemHandle 返回无效句柄。 ");
+
                 if (!UsbDkNative.GetOverlappedResult(systemHandle, overlappedPtr, out _, true))
-                    UsbDkNative.ThrowLastWin32("UsbDk 异步传输完成失败");
+                {
+                    var error = Marshal.GetLastWin32Error();
+                    if (error == UsbDkNative.ErrorOperationAborted && pending.CancellationRequested)
+                        return CreateCancelledCompletion(request);
+
+                    throw new Win32Exception(error, "UsbDk 异步传输完成失败");
+                }
             }
             else if (result == UsbDkTransferResult.Failure)
             {
+                if (pending.CancellationRequested)
+                    return CreateCancelledCompletion(request);
+
                 throw new IOException($"UsbDk 传输失败，BusId={busId}, EP=0x{endpoint:X2}。 ");
             }
 
@@ -220,11 +298,52 @@ public sealed class UsbDkDeviceManager : IDisposable
         }
         finally
         {
-            pendingEndpoints.TryRemove(pendingKey, out _);
+            lock (pending.SyncRoot)
+            {
+                pending.Completed = true;
+            }
+
+            pendingTransfers.TryRemove(pendingKey, out _);
             Marshal.FreeHGlobal(requestPtr);
             Marshal.FreeHGlobal(overlappedPtr);
             UsbDkNative.CloseHandle(eventHandle);
             Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    private static UsbIpSubmitCompletion CreateCancelledCompletion(UsbIpSubmitRequest request)
+        => new(
+            request.Sequence,
+            request.DeviceId,
+            request.Direction,
+            request.Endpoint,
+            -104, // Linux ECONNRESET：USB/IP unlink 后目标 SUBMIT 的标准取消语义。
+            0,
+            request.StartFrame,
+            request.NumberOfPackets,
+            1,
+            Array.Empty<byte>());
+
+    private static void TryCancelPendingTransfer(RedirectedDevice device, PendingTransfer pending)
+    {
+        lock (pending.SyncRoot)
+        {
+            if (pending.Completed || pending.CancellationRequested) return;
+            pending.CancellationRequested = true;
+            if (!pending.IoStarted) return;
+
+            var systemHandle = UsbDkNative.UsbDk_GetRedirectorSystemHandle(device.Handle);
+            if (systemHandle == 0 || systemHandle == UsbDkNative.InvalidHandleValue) return;
+
+            if (UsbDkNative.CancelIoEx(systemHandle, pending.OverlappedPtr)) return;
+
+            // ERROR_NOT_FOUND 表示该 OVERLAPPED 已经完成，不需要再取消。
+            var error = Marshal.GetLastWin32Error();
+            if (error != UsbDkNative.ErrorNotFound)
+            {
+                // UNLINK 是恢复性路径。取消失败不能退化成 AbortPipe，否则又会误伤同端点其它 URB。
+                // 让原 I/O 自然完成，由 USB/IP 会话后续状态决定是否继续。
+            }
         }
     }
 
@@ -372,7 +491,19 @@ public sealed class UsbDkDeviceManager : IDisposable
         disposed = true;
         foreach (var item in redirected.Values) item.Dispose();
         redirected.Clear();
+        activeSessionBusIds.Clear();
+        pendingTransfers.Clear();
         GC.SuppressFinalize(this);
+    }
+
+    private sealed class PendingTransfer(ulong endpoint, nint overlappedPtr)
+    {
+        public object SyncRoot { get; } = new();
+        public ulong Endpoint { get; } = endpoint;
+        public nint OverlappedPtr { get; } = overlappedPtr;
+        public bool IoStarted { get; set; }
+        public bool CancellationRequested { get; set; }
+        public bool Completed { get; set; }
     }
 
     private sealed class RedirectedDevice : IDisposable
