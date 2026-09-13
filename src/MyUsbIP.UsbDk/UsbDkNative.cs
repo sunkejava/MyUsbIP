@@ -6,6 +6,8 @@ namespace MyUsbIP.UsbDk;
 internal static class UsbDkNative
 {
     internal const int MaxDeviceIdLen = 200;
+    internal const int ErrorOperationAborted = 995;
+    internal const int ErrorNotFound = 1168;
     internal static readonly nint InvalidHandleValue = new(-1);
 
     [DllImport("UsbDkHelper.dll", CallingConvention = CallingConvention.Cdecl, SetLastError = true)]
@@ -61,6 +63,14 @@ internal static class UsbDkNative
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool GetOverlappedResult(nint fileHandle, nint overlapped, out uint bytesTransferred, bool wait);
+
+    /// <summary>
+    /// 精确取消指定 OVERLAPPED I/O。USB/IP UNLINK 必须只取消目标 URB，
+    /// 不能使用 UsbDk_AbortPipe，否则会把同一 Bulk-IN 端点上其他挂起读取一起取消。
+    /// </summary>
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool CancelIoEx(nint fileHandle, nint overlapped);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
