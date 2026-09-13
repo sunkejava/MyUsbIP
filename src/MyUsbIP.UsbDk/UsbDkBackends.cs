@@ -71,9 +71,11 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
             // UsbDk 对部分 USB 串口设备（包括部分 CH340 类设备）执行 StopRedirect 后，
             // 再次 StartRedirect 可能失败或长时间阻塞。因此 Redirect 句柄作为服务端设备捕获生命周期保留。
             await manager.ShareAsync(busId, cancellationToken).ConfigureAwait(false);
+            manager.MarkSessionActive(busId);
         }
         catch
         {
+            manager.MarkSessionInactive(busId);
             activeSessions.TryRemove(busId, out _);
             throw;
         }
@@ -82,6 +84,7 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
     public async Task EndSessionAsync(string busId, CancellationToken cancellationToken = default)
     {
         activeSessions.TryRemove(busId, out _);
+        manager.MarkSessionInactive(busId);
         await manager.ResetAsync(busId, cancellationToken).ConfigureAwait(false);
     }
 
