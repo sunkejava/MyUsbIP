@@ -546,6 +546,186 @@ public sealed class UsbDkDeviceManager : IDisposable
         return UsbDkTransferType.Bulk;
     }
 
+    private async Task<int> CancelAndDrainPendingTransfersAsync(
+        string busId,
+        RedirectedDevice device,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        foreach (var pending in pendingTransfers
+                     .Where(x => string.Equals(x.Key.BusId, busId, StringComparison.OrdinalIgnoreCase))
+                     .Select(x => x.Value)
+                     .ToArray())
+        {
+            TryCancelPendingTransfer(device, pending);
+        }
+
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var count = pendingTransfers.Keys.Count(x =>
+                string.Equals(x.BusId, busId, StringComparison.OrdinalIgnoreCase));
+            if (count == 0) return 0;
+            await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+        }
+
+        return pendingTransfers.Keys.Count(x =>
+            string.Equals(x.BusId, busId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task<WindowsDeviceRecovery.Identity?> ResolveRecoveryIdentityAsync(
+        UsbDkDeviceInfoNative native,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        do
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var identity = WindowsDeviceRecovery.ResolveIdentity(native.Id.DeviceId, native.Id.InstanceId);
+            if (identity is not null) return identity;
+
+            if (DateTime.UtcNow >= deadline) break;
+            await Task.Delay(250, cancellationToken).ConfigureAwait(false);
+        } while (true);
+
+        return null;
+    }
+
+    private async Task<bool> WaitForNativeDeviceStableAsync(
+        UsbDkDeviceInfoNative expected,
+        WindowsDeviceRecovery.Identity identity,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        const int requiredStableHits = 3;
+        var stableHits = 0;
+        var deadline = DateTime.UtcNow + timeout;
+
+        while (DateTime.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Delay(250, cancellationToken).ConfigureAwait(false);
+
+            IReadOnlyList<UsbDkDeviceInfoNative> current;
+            try
+            {
+                current = EnumerateNativeDevices();
+                ReplaceNativeCache(current);
+            }
+            catch (Win32Exception)
+            {
+                stableHits = 0;
+                continue;
+            }
+
+            var present = WindowsDevicePresence.EnumeratePresentUsbInstanceIds();
+            var matched = current.FirstOrDefault(x =>
+                x.DeviceDescriptor.VendorId == expected.DeviceDescriptor.VendorId &&
+                x.DeviceDescriptor.ProductId == expected.DeviceDescriptor.ProductId &&
+                string.Equals(
+                    WindowsDevicePresence.FindPresentInstanceId(x.Id.DeviceId, x.Id.InstanceId, present),
+                    identity.FullInstanceId,
+                    StringComparison.OrdinalIgnoreCase));
+
+            if (!string.IsNullOrWhiteSpace(matched.Id.DeviceId))
+            {
+                stableHits++;
+                var currentBusId = GetBusId(matched);
+                ch340RecoveryIdentities[currentBusId] = identity;
+                if (stableHits >= requiredStableHits) return true;
+            }
+            else
+            {
+                stableHits = 0;
+            }
+        }
+
+        return false;
+    }
+
+    private async Task<string> RecoverCh340AfterRedirectFailureAsync(
+        string busId,
+        UsbDkDeviceInfoNative native,
+        WindowsDeviceRecovery.Identity identity,
+        CancellationToken cancellationToken)
+    {
+        var details = new List<string>();
+
+        if (WindowsDeviceRecovery.TryRestart(identity, out var restartDetail))
+            details.Add("restart=" + restartDetail);
+        else
+            details.Add("restart-failed=" + restartDetail);
+
+        var stable = await WaitForNativeDeviceStableAsync(
+            native, identity, TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false);
+
+        if (!stable && WindowsDeviceRecovery.TryReenumerateParent(identity, out var parentDetail))
+        {
+            details.Add("parent=" + parentDetail);
+            stable = await WaitForNativeDeviceStableAsync(
+                native, identity, TimeSpan.FromSeconds(8), cancellationToken).ConfigureAwait(false);
+        }
+
+        details.Add("stable=" + stable);
+        if (stable)
+            ch340RecoveryIdentities[busId] = identity;
+
+        return string.Join("; ", details);
+    }
+
+    private UsbDkDeviceInfoNative? FindNativeDeviceWithCache(string busId)
+    {
+        if (nativeCache.TryGetValue(busId, out var cached))
+            return cached;
+
+        try
+        {
+            var current = EnumerateNativeDevices();
+            ReplaceNativeCache(current);
+            return current.FirstOrDefault(x =>
+                string.Equals(GetBusId(x), busId, StringComparison.OrdinalIgnoreCase)) is var found &&
+                   !string.IsNullOrWhiteSpace(found.Id.DeviceId)
+                ? found
+                : null;
+        }
+        catch (Win32Exception) when (nativeCache.TryGetValue(busId, out cached))
+        {
+            return cached;
+        }
+    }
+
+    private IReadOnlyList<UsbDkDeviceInfoNative> GetPresentCachedNativeDevices()
+    {
+        var cached = nativeCache.Values.ToArray();
+        if (cached.Length == 0) return cached;
+
+        var present = WindowsDevicePresence.EnumeratePresentUsbInstanceIds();
+        if (present.Count == 0) return cached;
+
+        return cached.Where(x =>
+        {
+            var busId = GetBusId(x);
+            return activeSessionBusIds.ContainsKey(busId) ||
+                   WindowsDevicePresence.IsPresent(x.Id.DeviceId, x.Id.InstanceId, present);
+        }).ToArray();
+    }
+
+    private void ReplaceNativeCache(IReadOnlyList<UsbDkDeviceInfoNative> snapshots)
+    {
+        nativeCache.Clear();
+        foreach (var snapshot in snapshots)
+            nativeCache[GetBusId(snapshot)] = snapshot;
+    }
+
+    private static bool IsCh340(UsbDkDeviceInfoNative native)
+        => native.DeviceDescriptor.VendorId == 0x1A86 &&
+           native.DeviceDescriptor.ProductId == 0x7523;
+
+    private static string ToVidPid(UsbDkDeviceInfoNative native)
+        => $"{native.DeviceDescriptor.VendorId:X4}:{native.DeviceDescriptor.ProductId:X4}";
+
     private UsbIpDeviceInfo ToDeviceInfo(UsbDkDeviceInfoNative native)
     {
         var busId = GetBusId(native);
@@ -556,21 +736,17 @@ public sealed class UsbDkDeviceManager : IDisposable
             VendorId = native.DeviceDescriptor.VendorId,
             ProductId = native.DeviceDescriptor.ProductId,
             Product = native.Id.DeviceId,
-            State = redirected.ContainsKey(busId) ? UsbIpDeviceState.Shared : UsbIpDeviceState.Available,
+            State = redirected.ContainsKey(busId) || activeSessionBusIds.ContainsKey(busId)
+                ? UsbIpDeviceState.Shared
+                : UsbIpDeviceState.Available,
         };
     }
 
     private static string GetBusId(UsbDkDeviceInfoNative native)
         => $"{unchecked((uint)native.FilterId):X8}-{unchecked((uint)native.Port):X8}";
 
-    private static UsbDkDeviceInfoNative? FindNativeDevice(string busId)
-    {
-        foreach (var item in EnumerateNativeDevices())
-        {
-            if (string.Equals(GetBusId(item), busId, StringComparison.OrdinalIgnoreCase)) return item;
-        }
-        return null;
-    }
+    private UsbDkDeviceInfoNative? FindNativeDevice(string busId)
+        => FindNativeDeviceWithCache(busId);
 
     private static IReadOnlyList<UsbDkDeviceInfoNative> EnumerateNativeDevices()
     {
@@ -685,6 +861,9 @@ public sealed class UsbDkDeviceManager : IDisposable
         redirected.Clear();
         activeSessionBusIds.Clear();
         pendingTransfers.Clear();
+        nativeCache.Clear();
+        ch340RecoveryIdentities.Clear();
+        redirectGate.Dispose();
         GC.SuppressFinalize(this);
     }
 
