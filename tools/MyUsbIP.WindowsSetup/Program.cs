@@ -11,9 +11,10 @@ if (!OperatingSystem.IsWindows())
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 var exeName = Path.GetFileNameWithoutExtension(Environment.ProcessPath ?? string.Empty);
-var role = exeName.Contains("Server", StringComparison.OrdinalIgnoreCase) ? "server"
-    : exeName.Contains("Client", StringComparison.OrdinalIgnoreCase) ? "client"
-    : string.Empty;
+var role = EmbeddedPayload.DetectEmbeddedRole()
+    ?? (exeName.Contains("Server", StringComparison.OrdinalIgnoreCase) ? "server"
+        : exeName.Contains("Client", StringComparison.OrdinalIgnoreCase) ? "client"
+        : string.Empty);
 
 if (string.IsNullOrEmpty(role))
 {
@@ -59,7 +60,7 @@ try
 
     StopExistingRuntime(role, Write);
 
-    if (role == "server") InstallServer(baseDir, dependencyPath, Write);
+    if (role == "server") InstallServer(baseDir, dependencyPath, package, Write);
     else InstallClient(baseDir, dependencyPath, package, Write);
 
     Write("安装与内置自检全部完成。");
@@ -154,21 +155,39 @@ static void WaitServiceStopped(string serviceName, TimeSpan timeout)
     }
 }
 
-static void InstallServer(string baseDir, string dependencyPath, Action<string> write)
+static void InstallServer(string baseDir, string dependencyPath, DependencyPackage package, Action<string> write)
 {
-    var installDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "MyUsbIP", "Server");
+    var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+    var installDir = Path.Combine(programFiles, "MyUsbIP", "Server");
     var payload = Path.Combine(baseDir, "payload", "server");
     if (!Directory.Exists(payload)) throw new DirectoryNotFoundException($"缺少服务端程序目录: {payload}");
 
-    write("安装/更新 UsbDk...");
-    var msiLog = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "MyUsbIP", "InstallerLogs", "usbdk-msi.log");
-    var code = RunArgs("msiexec.exe", "/i", dependencyPath, "/qn", "/norestart", "/l*v", msiLog);
-    if (code is not (0 or 3010)) throw new InvalidOperationException($"UsbDk 安装失败，ExitCode={code}，日志={msiLog}");
+    var helper = Path.Combine(programFiles, "UsbDk Runtime Library", "UsbDkHelper.dll");
+    var existingService = RunCaptureArgs("sc.exe", "query", "UsbDk");
+    var helperVersion = File.Exists(helper) ? FileVersionInfo.GetVersionInfo(helper).FileVersion : null;
+    var usbDkHealthy = File.Exists(helper) && existingService.ExitCode == 0 && VersionMatches(helperVersion, package.Version);
+    var rebootRequired = false;
+
+    if (usbDkHealthy)
+    {
+        write($"检测到 UsbDk {helperVersion ?? package.Version} 且驱动服务存在，跳过重复 MSI 安装，避免覆盖升级扰动 USB/CH340 驱动栈。");
+    }
+    else
+    {
+        write($"安装/修复 UsbDk {package.Version}...");
+        var msiLog = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "MyUsbIP", "InstallerLogs", "usbdk-msi.log");
+        var code = RunArgsWithTimeout("msiexec.exe", TimeSpan.FromMinutes(5),
+            "/i", dependencyPath, "/qn", "/norestart", "/l*v", msiLog);
+        if (code is not (0 or 3010))
+            throw new InvalidOperationException($"UsbDk 安装失败，ExitCode={code}，日志={msiLog}");
+        rebootRequired = code == 3010;
+        if (rebootRequired)
+            write("UsbDk 安装成功，但 Windows 返回 3010：需要重启后驱动栈才能完全生效。");
+    }
 
     write("部署服务端程序...");
     CopyDirectory(payload, installDir, new[] { "appsettings.json" });
     Directory.CreateDirectory(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "MyUsbIP", "ServerLogs"));
-    var helper = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "UsbDk Runtime Library", "UsbDkHelper.dll");
     if (!File.Exists(helper)) throw new FileNotFoundException("UsbDk 已安装但未找到 UsbDkHelper.dll。", helper);
     File.Copy(helper, Path.Combine(installDir, "UsbDkHelper.dll"), true);
 
@@ -184,6 +203,12 @@ static void InstallServer(string baseDir, string dependencyPath, Action<string> 
     RunArgs("schtasks.exe", "/Delete", "/TN", "MyUsbIP USB-IP Server", "/F");
     var taskCommand = $"\"{daemon}\" \"{config}\"";
     EnsureSuccess(RunArgs("schtasks.exe", "/Create", "/TN", "MyUsbIP USB-IP Server", "/SC", "ONSTART", "/RU", "SYSTEM", "/RL", "HIGHEST", "/TR", taskCommand, "/F"), "创建开机任务");
+
+    if (rebootRequired)
+    {
+        write("因 UsbDk 要求重启，本次不强行启动 MyUsbIP 服务端；重启后计划任务会自动启动，避免在半更新驱动栈上执行 USB Redirect。");
+        return;
+    }
 
     write("启动更新后的 MyUsbIP 服务端...");
     EnsureSuccess(RunArgs("schtasks.exe", "/Run", "/TN", "MyUsbIP USB-IP Server"), "启动服务端任务");
@@ -238,13 +263,17 @@ static void InstallClient(string baseDir, string dependencyPath, DependencyPacka
         }
     }
 
+    var rebootRequired = false;
     if (needInstall)
     {
         write($"安装/升级 usbip-win2 {package.Version}...");
-        var code = RunArgs(dependencyPath,
+        var code = RunArgsWithTimeout(dependencyPath, TimeSpan.FromMinutes(5),
             "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/TYPE=compact", "/CLOSEAPPLICATIONS");
         if (code is not (0 or 3010))
             throw new InvalidOperationException($"usbip-win2 安装失败，ExitCode={code}");
+        rebootRequired = code == 3010;
+        if (rebootRequired)
+            write("usbip-win2 安装成功，但 Windows 返回 3010：需要重启后 UDE/VHCI 才能完全生效。");
     }
 
     if (!File.Exists(usbip))
@@ -252,6 +281,12 @@ static void InstallClient(string baseDir, string dependencyPath, DependencyPacka
 
     write("配置 usbip-win2 系统 PATH...");
     UpdateMachinePath(usbipDir, legacyDir);
+
+    if (rebootRequired)
+    {
+        write("因 usbip-win2 要求重启，本次跳过 UDE/VHCI 运行态自检；重启后再执行 myusbip client port 验证。");
+        return;
+    }
 
     write("执行客户端自检...");
     var versionResult = RunCaptureArgs(usbip, "-V");
@@ -308,22 +343,46 @@ static ProcessStartInfo CreateStart(string fileName, bool capture, params string
 }
 
 static int RunArgs(string fileName, params string[] args)
+    => RunArgsWithTimeout(fileName, TimeSpan.FromMinutes(2), args);
+
+static int RunArgsWithTimeout(string fileName, TimeSpan timeout, params string[] args)
 {
     using var process = Process.Start(CreateStart(fileName, false, args));
     if (process is null) return -1;
-    process.WaitForExit();
-    return process.ExitCode;
+    if (process.WaitForExit(checked((int)Math.Min(int.MaxValue, timeout.TotalMilliseconds))))
+        return process.ExitCode;
+
+    try { process.Kill(entireProcessTree: true); } catch { }
+    try { process.WaitForExit(5000); } catch { }
+    return -2;
 }
 
 static (int ExitCode, string Output) RunCaptureArgs(string fileName, params string[] args)
 {
     using var process = Process.Start(CreateStart(fileName, true, args));
     if (process is null) return (-1, "进程启动失败");
+
     var stdoutTask = process.StandardOutput.ReadToEndAsync();
     var stderrTask = process.StandardError.ReadToEndAsync();
-    process.WaitForExit();
+    if (!process.WaitForExit(120000))
+    {
+        try { process.Kill(entireProcessTree: true); } catch { }
+        try { process.WaitForExit(5000); } catch { }
+        return (-2, $"进程执行超过 120 秒已终止: {fileName}");
+    }
+
     Task.WaitAll(stdoutTask, stderrTask);
     return (process.ExitCode, stdoutTask.Result + Environment.NewLine + stderrTask.Result);
+}
+
+static bool VersionMatches(string? installed, string required)
+{
+    if (string.IsNullOrWhiteSpace(installed) || string.IsNullOrWhiteSpace(required)) return false;
+    if (!Version.TryParse(installed.Split(' ', '-', '+')[0], out var installedVersion)) return false;
+    if (!Version.TryParse(required.Split(' ', '-', '+')[0], out var requiredVersion)) return false;
+    return installedVersion.Major == requiredVersion.Major
+           && installedVersion.Minor == requiredVersion.Minor
+           && installedVersion.Build == requiredVersion.Build;
 }
 
 static void EnsureSuccess(int exitCode, string operation)
