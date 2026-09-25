@@ -242,7 +242,7 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
                 {
                     await transport.EndSessionAsync(importedBusId, CancellationToken.None).ConfigureAwait(false);
                     await eventSink.WriteAsync(new(DateTimeOffset.Now, "native.session.released", "Information", sessionId,
-                        importedBusId, remote, "USB/IP 会话已释放，设备已重置并保留 UsbDk Redirect",
+                        importedBusId, remote, "USB/IP 会话已释放，UsbDk Redirect 已停止并归还宿主驱动",
                         new Dictionary<string, object?> { ["clientAddress"] = remoteAddress }), CancellationToken.None);
                 }
                 catch (Exception ex)
@@ -338,6 +338,25 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
                     {
                         var request = await UsbIpWire.ReadSubmitAsync(stream, basic.Sequence, basic.DeviceId,
                             basic.Direction, basic.Endpoint, sessionCts.Token).ConfigureAwait(false);
+
+                        if (pending.ContainsKey(request.Sequence))
+                            throw new InvalidDataException($"收到重复的在途 USB/IP Sequence={request.Sequence}。 ");
+                        if (pending.Count >= 4096)
+                            throw new InvalidDataException("单个 USB/IP 会话在途 URB 超过 4096，已拒绝继续提交。 ");
+
+                        if (logging.LogSuccessfulUrbs)
+                        {
+                            await eventSink.WriteAsync(new(DateTimeOffset.Now, "native.urb.submitted", "Debug", sessionId,
+                                busId, remote, $"URB Seq={request.Sequence} EP={request.Endpoint} 已提交", new Dictionary<string, object?>
+                                {
+                                    ["sequence"] = request.Sequence,
+                                    ["endpoint"] = request.Endpoint,
+                                    ["direction"] = request.Direction,
+                                    ["requestedLength"] = request.TransferBufferLength,
+                                    ["transferFlags"] = request.TransferFlags,
+                                }), CancellationToken.None);
+                        }
+
                         var task = ProcessSubmitAsync(request);
                         pending[request.Sequence] = task;
                         break;
