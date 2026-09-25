@@ -59,6 +59,7 @@ public static class UsbIpWire
     public const int BasicHeaderSize = 20;
     public const int SubmitBodySize = 28;
     public const int UnlinkBodySize = 28;
+    public const int MaxTransferBufferLength = 16 * 1024 * 1024;
 
     public static async ValueTask WriteDeviceAsync(Stream stream, UsbIpDeviceInfo device, CancellationToken cancellationToken = default)
     {
@@ -154,10 +155,13 @@ public static class UsbIpWire
         var interval = BinaryPrimitives.ReadInt32BigEndian(body.AsSpan(16, 4));
         var setup = body.AsSpan(20, 8).ToArray();
 
+        ValidateDirectionAndEndpoint(direction, endpoint);
+        if (length < 0 || length > MaxTransferBufferLength)
+            throw new InvalidDataException($"USB/IP SUBMIT 长度非法: {length}，允许范围 0..{MaxTransferBufferLength}。 ");
+
         byte[] payload = Array.Empty<byte>();
         if (direction == 0 && length > 0)
         {
-            if (length > 16 * 1024 * 1024) throw new InvalidDataException("USB/IP 单次 OUT 传输长度超过安全限制。 ");
             payload = new byte[length];
             await UsbIpCodec.ReadExactlyAsync(stream, payload, cancellationToken).ConfigureAwait(false);
             UsbIpDiagnostics.BytesReceived.Add(payload.Length);
@@ -171,12 +175,20 @@ public static class UsbIpWire
         var body = new byte[UnlinkBodySize];
         await UsbIpCodec.ReadExactlyAsync(stream, body, cancellationToken).ConfigureAwait(false);
         UsbIpDiagnostics.BytesReceived.Add(body.Length);
+        ValidateDirectionAndEndpoint(direction, endpoint);
         var targetSequence = BinaryPrimitives.ReadUInt32BigEndian(body.AsSpan(0, 4));
         return new UsbIpUnlinkRequest(sequence, deviceId, direction, endpoint, targetSequence);
     }
 
     public static async ValueTask WriteSubmitCompletionAsync(Stream stream, UsbIpSubmitCompletion completion, CancellationToken cancellationToken = default)
     {
+        ValidateDirectionAndEndpoint(completion.Direction, completion.Endpoint);
+        if (completion.ActualLength < 0 || completion.ActualLength > MaxTransferBufferLength)
+            throw new InvalidDataException($"USB/IP RET_SUBMIT actual_length 非法: {completion.ActualLength}。 ");
+        if (completion.Direction != 0 && completion.Payload.Length != completion.ActualLength)
+            throw new InvalidDataException(
+                $"USB/IP RET_SUBMIT IN Payload 长度 {completion.Payload.Length} 与 actual_length {completion.ActualLength} 不一致。 ");
+
         var header = new byte[BasicHeaderSize + SubmitBodySize];
         BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(0, 4), UsbIpDataCommands.RetSubmit);
         BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(4, 4), completion.Sequence);
@@ -222,6 +234,14 @@ public static class UsbIpWire
             BinaryPrimitives.ReadUInt32BigEndian(buffer.AsSpan(8, 4)),
             BinaryPrimitives.ReadUInt32BigEndian(buffer.AsSpan(12, 4)),
             BinaryPrimitives.ReadUInt32BigEndian(buffer.AsSpan(16, 4)));
+    }
+
+    private static void ValidateDirectionAndEndpoint(uint direction, uint endpoint)
+    {
+        if (direction > 1)
+            throw new InvalidDataException($"USB/IP direction 非法: {direction}。 ");
+        if (endpoint > 15)
+            throw new InvalidDataException($"USB/IP endpoint 非法: {endpoint}，仅允许端点号 0..15。 ");
     }
 
     private static void WriteAscii(Span<byte> destination, string value)
