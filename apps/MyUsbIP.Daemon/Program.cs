@@ -55,7 +55,7 @@ if (string.Equals(config.BackendMode, "UsbDkUsbipWin", StringComparison.OrdinalI
         return 3;
     }
 
-    usbDkManager = new UsbDkDeviceManager();
+    usbDkManager = new UsbDkDeviceManager(sink);
     serverBackend = new UsbDkServerBackend(usbDkManager);
     clientBackend = new UsbipWinVhciClientBackend(
         usbipPath: config.UsbipWinPath,
