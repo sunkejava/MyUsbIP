@@ -13,7 +13,7 @@ Windows 服务端
 
 Windows 客户端
   -> usbip.exe
-  -> usbip-win VHCI
+  -> usbip-win2 0.9.8.0 UDE/VHCI
   -> Windows PnP
   -> 设备厂商驱动
 ```
@@ -28,7 +28,7 @@ Windows 客户端
 - MyUsbIP 发布使用 win-x64 自包含版本
 - 服务端 TCP 3240 只允许可信局域网/VPN 网段访问
 
-不建议将 Windows 7/8 作为第一阶段生产目标。UsbDk 本身兼容较老 Windows，但当前 MyUsbIP、.NET 10、usbip-win VHCI 的整体兼容性和驱动签名部署成本都更适合 Windows 10/11。
+不建议将 Windows 7/8 作为第一阶段生产目标。UsbDk 本身兼容较老 Windows，但当前 MyUsbIP、.NET 10、usbip-win2 UDE/VHCI 的整体兼容性和驱动签名部署成本都更适合 Windows 10/11。
 
 ---
 
@@ -168,72 +168,27 @@ C:\Program Files\UsbDk Runtime Library\UsbDkHelper.dll
 
 ---
 
-# 4. 获取 usbip-win VHCI 客户端依赖
+# 4. 获取 usbip-win2 UDE/VHCI 客户端依赖
 
-上游项目示例：
-
-```text
-https://github.com/cezanne/usbip-win
-```
-
-usbip-win 客户端核心需要：
+Windows 客户端固定使用：
 
 ```text
-usbip.exe
-VHCI .sys
-VHCI .inf
-VHCI .cat
-证书文件（若该版本是测试签名）
+vadimgrn/usbip-win2 0.9.8.0
+USBip-0.9.8.0-x64.exe
+SHA256=81f426741f7ee2ed991febe24a22daca8400b6ae2f171054e3fb404897e15d39
 ```
 
-项目存在 WDM 与 UDE 两类 VHCI 实现。不要在一批生产机器上混装多个不同版本。
+官方安装包包含 UDE/VHCI 驱动与 `usbip.exe`。MyUsbIP Setup 会优先复用已经健康安装的同版本 usbip-win2；仅首次安装或自检失败时执行安装/修复。
 
-建议选定一套后固定：
+不要同时保留旧 cezanne/usbip-win VHCI 与 usbip-win2。安装器会清理旧版 MyUsbIP 客户端目录并将 `C:\Program Files\USBip` 配入系统 PATH。
+
+Attach 默认：
 
 ```text
-MyUsbIP 1.0.x
-  -> usbip-win commit/release X
-  -> VHCI WDM 或 UDE 固定一种
+usbip attach -r <host> -b <busid> --once --receive-mode=zero-copy
 ```
 
-如果上游包是测试签名驱动，通常需要：
-
-```cmd
-bcdedit /set TESTSIGNING ON
-```
-
-随后重启。
-
-测试证书需安装到 Local Computer：
-
-```text
-Trusted Root Certification Authorities
-Trusted Publishers
-```
-
-生产环境如果无法接受 TESTSIGNING，则必须改用正式签名的 VHCI 构建，不能依赖测试签名包。
-
-安装 VHCI 的常见方式：
-
-```cmd
-usbip.exe install
-```
-
-部分版本支持：
-
-```cmd
-usbip.exe install -u
-```
-
-安装 UDE，或：
-
-```cmd
-usbip.exe install -w
-```
-
-安装 WDM。
-
-具体参数必须以实际固定版本为准，不要跨版本混用安装命令。
+可在 `clientsettings.json` 将 ReceiveMode 调整为 `low-latency`，但生产变更必须做设备回归验证。
 
 ---
 
@@ -406,38 +361,24 @@ Get-NetTCPConnection -State Listen -LocalPort 3240
 
 # 7. 客户端部署
 
-## 7.1 安装 usbip-win VHCI
+## 7.1 安装 usbip-win2 UDE/VHCI
 
-将固定版本 VHCI 文件复制到：
+生产环境优先直接运行 Release 中：
 
 ```text
-C:\Program Files\MyUsbIP\usbip-win\
+MyUsbIP-Client-Setup.exe
 ```
 
-如果使用测试签名：
-
-1. 安装对应证书到 Local Computer。
-2. 开启 TESTSIGNING。
-3. 重启。
-4. 管理员 CMD/PowerShell 安装 VHCI。
-
-例如：
-
-```cmd
-usbip.exe install
-```
+安装器内嵌已固定 SHA256 的 usbip-win2 0.9.8.0 x64 官方安装包，完成安装/复用、PATH 配置和 `usbip -V` / `usbip port` 自检。若驱动安装返回“需要重启”，安装器会停止后续自检并要求先重启。
 
 ## 7.2 验证驱动
 
-设备管理器中应出现 USB/IP VHCI 对应虚拟控制器/根设备。
-
-命令检查：
-
-```powershell
-Get-CimInstance Win32_SystemDriver | Where-Object {
-    $_.Name -match 'usbip|vhci' -or $_.DisplayName -match 'USB/IP|VHCI'
-}
+```cmd
+"C:\Program Files\USBip\usbip.exe" -V
+"C:\Program Files\USBip\usbip.exe" port
 ```
+
+设备管理器中应存在 usbip-win2 UDE/VHCI 对应虚拟控制器。
 
 ## 7.3 网络连通测试
 
@@ -759,14 +700,14 @@ testsigning Yes
 
 # 14. 依赖升级规则
 
-任何 UsbDk 或 usbip-win 升级都必须单独走兼容测试，不允许直接覆盖生产版本。
+任何 UsbDk 或 usbip-win2 升级都必须单独走兼容测试，不允许直接覆盖生产版本。
 
 推荐版本关系表：
 
 ```text
 MyUsbIP 版本
 UsbDk 版本 + SHA256
-usbip-win commit/release + SHA256
+usbip-win2 release + SHA256
 Windows 版本
 测试设备列表
 测试结果
@@ -799,15 +740,17 @@ GitHub Actions 构建 MyUsbIP
  -> 上传 MyUsbIP Release
 ```
 
-建议最后形成：
+当前 Release 形成：
 
 ```text
+MyUsbIP-Server-Setup.exe
+MyUsbIP-Client-Setup.exe
 MyUsbIP-Server-win-x64.zip
 MyUsbIP-Client-win-x64.zip
-MyUsbIP-Dependencies-win-x64.zip
+myusbip-linux-x64.zip
 checksums.sha256
 ```
 
-服务端安装包中直接包含经过验证的 UsbDk 安装文件，客户端安装包中直接包含经过验证的 usbip-win VHCI 文件。
+Server Setup 只内嵌 Server payload + 固定 UsbDk；Client Setup 只内嵌 Client payload + 固定 usbip-win2。两个备用 ZIP 不再重复包含 Setup EXE，只携带各自角色所需的离线依赖。
 
-这样现场部署不依赖 GitHub 网络，也不会发生上游 latest 漂移。
+这样现场部署不依赖 GitHub 网络，也不会发生上游 latest 漂移，同时避免同一份 runtime/驱动在 Release 中被多次嵌套打包。
