@@ -10,7 +10,7 @@
       "fileName": "UsbDk_1.0.22_x64.msi",
       "sourcePage": "https://github.com/daynix/UsbDk/releases/tag/v1.00-22",
       "downloadUrl": "https://github.com/daynix/UsbDk/releases/download/v1.00-22/UsbDk_1.0.22_x64.msi",
-      "sha256": "",
+      "sha256": "91f6f695e1e13c656024e6d3b55620bf08d8835ef05ee0496935ba6bb62466a5",
       "installType": "msi",
       "requiredFilesAfterInstall": [
         "C:\\Program Files\\UsbDk Runtime Library\\UsbDkHelper.dll"
