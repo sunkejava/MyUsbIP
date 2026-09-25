@@ -91,21 +91,23 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
     /// </summary>
     public async Task EndSessionAsync(string busId, CancellationToken cancellationToken = default)
     {
-        activeSessions.TryRemove(busId, out _);
-
+        // BUSID 的会话占用必须保持到 StopRedirect + 宿主驱动回绑全部完成。
+        // 如果一进入 EndSession 就释放 activeSessions，新客户端可能在旧会话仍清理时 BeginSession：
+        // ShareAsync 会看到旧 Redirect 仍存在并直接返回，随后旧 EndSession 又执行 Unshare，
+        // 造成“新会话刚成功，旧会话把设备 StopRedirect 掉”的竞态。
         UsbIpDeviceInfo? releasedDevice = null;
         try
         {
-            releasedDevice = (await manager.ListAsync(CancellationToken.None).ConfigureAwait(false))
-                .FirstOrDefault(x => string.Equals(x.BusId, busId, StringComparison.OrdinalIgnoreCase));
-        }
-        catch
-        {
-            // 保存身份仅用于释放后的稳定性等待；读取失败不能阻止真正 StopRedirect。
-        }
+            try
+            {
+                releasedDevice = (await manager.ListAsync(CancellationToken.None).ConfigureAwait(false))
+                    .FirstOrDefault(x => string.Equals(x.BusId, busId, StringComparison.OrdinalIgnoreCase));
+            }
+            catch
+            {
+                // 保存身份仅用于释放后的稳定性等待；读取失败不能阻止真正 StopRedirect。
+            }
 
-        try
-        {
             await manager.UnshareAsync(busId, CancellationToken.None).ConfigureAwait(false);
 
             if (releasedDevice is not null)
@@ -114,6 +116,7 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
         finally
         {
             manager.MarkSessionInactive(busId);
+            activeSessions.TryRemove(busId, out _);
         }
     }
 
