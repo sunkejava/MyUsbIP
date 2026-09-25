@@ -14,26 +14,59 @@ public sealed class UsbDkDeviceManager : IDisposable
     private readonly ConcurrentDictionary<string, RedirectedDevice> redirected = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, byte> activeSessionBusIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<(string BusId, uint Sequence), PendingTransfer> pendingTransfers = new();
+    private readonly ConcurrentDictionary<string, UsbDkDeviceInfoNative> nativeCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, WindowsDeviceRecovery.Identity> ch340RecoveryIdentities = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim redirectGate = new(1, 1);
+    private readonly IUsbIpEventSink eventSink;
+    private int redirectOperations;
     private bool disposed;
 
-    public Task<IReadOnlyList<UsbIpDeviceInfo>> ListAsync(CancellationToken cancellationToken = default)
+    public UsbDkDeviceManager(IUsbIpEventSink? eventSink = null)
+        => this.eventSink = eventSink ?? NullUsbIpEventSink.Instance;
+
+    public async Task<IReadOnlyList<UsbIpDeviceInfo>> ListAsync(CancellationToken cancellationToken = default)
     {
         EnsureWindows();
         cancellationToken.ThrowIfCancellationRequested();
 
+        IReadOnlyList<UsbDkDeviceInfoNative> nativeSnapshots;
+        if (Volatile.Read(ref redirectOperations) > 0 && !nativeCache.IsEmpty)
+        {
+            // UsbDk 的控制设备是串行队列。AddRedirect 最坏会在内核等待 120 秒，
+            // 此时再调用 UsbDk_GetDevicesList 会失败/被阻塞。Redirect 期间直接使用最后一次成功快照，
+            // 让 client list/status 始终可用，不让单个 CH340 重连拖死整个服务器设备列表。
+            nativeSnapshots = GetPresentCachedNativeDevices();
+        }
+        else
+        {
+            try
+            {
+                nativeSnapshots = EnumerateNativeDevices();
+                ReplaceNativeCache(nativeSnapshots);
+            }
+            catch (Win32Exception ex) when (!nativeCache.IsEmpty)
+            {
+                nativeSnapshots = GetPresentCachedNativeDevices();
+                await eventSink.WriteAsync(new(DateTimeOffset.Now, "usbdk.list.cache-fallback", "Warning", null,
+                    null, null, $"UsbDk_GetDevicesList 失败，已使用最近成功设备快照继续响应 DEVLIST: {ex.Message}",
+                    new Dictionary<string, object?>
+                    {
+                        ["nativeErrorCode"] = ex.NativeErrorCode,
+                        ["cachedDeviceCount"] = nativeSnapshots.Count,
+                        ["redirectOperations"] = Volatile.Read(ref redirectOperations),
+                    }, ex), CancellationToken.None);
+            }
+        }
+
         var devices = new Dictionary<string, UsbIpDeviceInfo>(StringComparer.OrdinalIgnoreCase);
-        foreach (var snapshot in EnumerateNativeDevices())
+        foreach (var snapshot in nativeSnapshots)
         {
             var info = ToDeviceInfo(snapshot);
             devices[info.BusId] = info;
         }
 
-        // StartRedirect 后设备可能不再出现在 UsbDk_GetDevicesList 中，因此必须保留 Redirect 快照，
-        // 否则 CH340/UKey detach 后无法再次 IMPORT。
-        // 但快照不能永久存在：Hub 断电/物理拔出后，UsbDk 句柄可能仍然存在，旧实现会把幽灵设备一直返回给 DEVLIST。
-        //
-        // 注意：正在被 USB/IP 会话使用的 Redirect 绝不能因为一次 PnP 查询抖动而被清理；
-        // 只有非活动会话的 Redirect 才通过 Windows PRESENT DevNode 做物理存在性校验。
+        // StartRedirect 后设备可能不再出现在 UsbDk_GetDevicesList 中，因此必须保留 Redirect 快照。
+        // 物理拔出后的非活动 Redirect 才允许通过 Windows PRESENT DevNode 清理。
         var needPresenceCheck = redirected.Keys.Any(x => !activeSessionBusIds.ContainsKey(x));
         var presentUsbInstanceIds = needPresenceCheck
             ? WindowsDevicePresence.EnumeratePresentUsbInstanceIds()
@@ -60,7 +93,7 @@ public sealed class UsbDkDeviceManager : IDisposable
                     }
 
                     try { removed.Dispose(); }
-                    catch { /* 物理设备已经消失时 StopRedirect 失败不应阻断 DEVLIST 刷新。 */ }
+                    catch { }
                 }
 
                 devices.Remove(pair.Key);
@@ -71,8 +104,7 @@ public sealed class UsbDkDeviceManager : IDisposable
             devices[pair.Key] = info;
         }
 
-        IReadOnlyList<UsbIpDeviceInfo> result = devices.Values.ToArray();
-        return Task.FromResult(result);
+        return devices.Values.ToArray();
     }
 
     public Task ShareAsync(string busId, CancellationToken cancellationToken = default)
