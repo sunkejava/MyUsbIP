@@ -38,7 +38,12 @@ public sealed class UsbIpDeviceMonitor(IMyUsbIpServer server, IUsbIpEventSink? e
                 continue;
             }
 
-            var current = devices.ToDictionary(GetIdentity, StringComparer.OrdinalIgnoreCase);
+            // UsbDk 的 InstanceId 并不保证是 Windows 全局唯一 PnP Instance ID；
+            // 对无序列号的 CH340/多 Hub 场景它可能只是 "4" 这类短值，多台设备会重复。
+            // 监控身份以服务端导出的 BUSID 为主，避免 ToDictionary 因重复 InstanceId 直接让整轮扫描失败。
+            var current = new Dictionary<string, UsbIpDeviceInfo>(StringComparer.OrdinalIgnoreCase);
+            foreach (var device in devices)
+                current[GetIdentity(device)] = device;
 
             foreach (var pair in current)
             {
@@ -88,9 +93,9 @@ public sealed class UsbIpDeviceMonitor(IMyUsbIpServer server, IUsbIpEventSink? e
     }
 
     private static string GetIdentity(UsbIpDeviceInfo device) =>
-        !string.IsNullOrWhiteSpace(device.InstanceId)
-            ? device.InstanceId
+        !string.IsNullOrWhiteSpace(device.BusId)
+            ? $"{device.BusId}:{device.VidPid}"
             : !string.IsNullOrWhiteSpace(device.SerialNumber)
                 ? $"{device.VidPid}:{device.SerialNumber}"
-                : $"{device.BusId}:{device.VidPid}";
+                : $"{device.VidPid}:{device.InstanceId}";
 }
