@@ -207,6 +207,10 @@ public sealed class UsbDkDeviceManager : IDisposable
         var endpoint = (ulong)(request.Endpoint & 0x0F);
         if (request.Direction != 0) endpoint |= 0x80;
         var transferType = ResolveTransferType(device, endpoint);
+        if (transferType == UsbDkTransferType.Isochronous)
+            throw new NotSupportedException(
+                $"当前 MyUsbIP UsbDk 数据面尚未实现 Isochronous packet/result 数组，拒绝提交 EP=0x{endpoint:X2}，避免构造不完整的 UsbDk ISO 请求。 ");
+
         var isControl = request.Endpoint == 0;
         var prefixLength = isControl ? 8 : 0;
         var dataLength = Math.Max(0, request.TransferBufferLength);
