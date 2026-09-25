@@ -6,6 +6,24 @@ internal static class EmbeddedPayload
 {
     private const string ResourcePrefix = "MyUsbIP.Setup.";
 
+    /// <summary>
+    /// 角色专用安装包只内嵌本角色的 payload/dependency。优先从资源判断角色，
+    /// 避免用户重命名 Setup.exe 后仅依赖文件名导致选择错误。
+    /// dual 开发包同时包含两种资源时返回 null，继续使用交互/文件名兼容逻辑。
+    /// </summary>
+    public static string? DetectEmbeddedRole()
+    {
+        var assembly = Assembly.GetExecutingAssembly();
+        var hasServer = assembly.GetManifestResourceInfo(ResourcePrefix + "server-payload.zip") is not null
+                        && assembly.GetManifestResourceInfo(ResourcePrefix + "server-dependency.bin") is not null;
+        var hasClient = assembly.GetManifestResourceInfo(ResourcePrefix + "client-payload.zip") is not null
+                        && assembly.GetManifestResourceInfo(ResourcePrefix + "client-dependency.bin") is not null;
+
+        if (hasServer && !hasClient) return "server";
+        if (hasClient && !hasServer) return "client";
+        return null;
+    }
+
     public static string PrepareWorkingDirectory(string fallbackBaseDirectory, string role)
     {
         var assembly = Assembly.GetExecutingAssembly();
