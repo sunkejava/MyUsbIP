@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Buffers.Binary;
 using System.Text;
 using MyUsbIP.Abstractions;
@@ -12,6 +13,7 @@ await TestDeviceWireMetadataAsync();
 await TestDevListInterfacesAsync();
 await TestDeviceStatusProtocolAsync();
 await TestChineseJsonLogAsync();
+await TestWin32JsonLogAsync();
 TestAutoShareRule();
 await TestLeaseManagerAsync();
 
@@ -170,6 +172,30 @@ async Task TestChineseJsonLogAsync()
         var text = await File.ReadAllTextAsync(path, Encoding.UTF8);
         Assert(text.Contains("中文日志可以直接阅读", StringComparison.Ordinal), "JSONL 中文被编码为 Unicode 转义");
         Assert(!text.Contains("\\u4e2d\\u6587", StringComparison.OrdinalIgnoreCase), "JSONL 不应包含中文 Unicode 转义");
+    }
+    finally
+    {
+        try { File.Delete(path); } catch { }
+    }
+}
+
+async Task TestWin32JsonLogAsync()
+{
+    var path = Path.Combine(Path.GetTempPath(), $"myusbip-smoke-win32-{Guid.NewGuid():N}.jsonl");
+    try
+    {
+        await using (var sink = new JsonLinesUsbIpEventSink(path))
+        {
+            await sink.WriteAsync(new UsbIpEvent(DateTimeOffset.Now, "smoke.win32", "Error", null,
+                "0000004D-00000004", null, "UsbDk_StartRedirect 失败",
+                Exception: new Win32Exception(5, "Access is denied")));
+        }
+
+        var text = await File.ReadAllTextAsync(path, Encoding.UTF8);
+        Assert(text.Contains("\"nativeErrorCode\":5", StringComparison.OrdinalIgnoreCase),
+            "JSONL 未记录 Win32 NativeErrorCode");
+        Assert(text.Contains("\"nativeErrorHex\":\"0x00000005\"", StringComparison.OrdinalIgnoreCase),
+            "JSONL 未记录 Win32 NativeErrorHex");
     }
     finally
     {
