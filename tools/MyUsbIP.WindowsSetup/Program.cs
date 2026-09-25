@@ -255,7 +255,9 @@ static void InstallClient(string baseDir, string dependencyPath, DependencyPacka
         write($"安装/升级 usbip-win2 {package.Version}...");
         var code = RunArgs(dependencyPath,
             "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/TYPE=compact", "/CLOSEAPPLICATIONS");
-        if (code is not (0 or 3010))
+        if (code == 3010)
+            throw new InvalidOperationException("usbip-win2 安装完成但 Windows 要求重启。请先重启系统后再运行安装器完成自检。");
+        if (code != 0)
             throw new InvalidOperationException($"usbip-win2 安装失败，ExitCode={code}");
     }
 
