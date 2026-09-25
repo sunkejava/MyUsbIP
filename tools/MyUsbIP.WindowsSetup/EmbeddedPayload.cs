@@ -61,6 +61,28 @@ internal static class EmbeddedPayload
         return workRoot;
     }
 
+    public static void TryCleanupWorkingDirectory(string baseDirectory, string role)
+    {
+        try
+        {
+            var expected = Path.GetFullPath(Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                "MyUsbIP",
+                "SetupCache",
+                role));
+            var actual = Path.GetFullPath(baseDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            expected = expected.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+            // 只允许删除安装器自己创建的 ProgramData SetupCache 目录。
+            if (!string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase)) return;
+            if (Directory.Exists(actual)) Directory.Delete(actual, recursive: true);
+        }
+        catch
+        {
+            // 安装已经成功时，缓存清理失败不应反向把安装判定为失败。
+        }
+    }
+
     private static void ExtractResource(Assembly assembly, string resourceName, string destination)
     {
         using var input = assembly.GetManifestResourceStream(resourceName)
