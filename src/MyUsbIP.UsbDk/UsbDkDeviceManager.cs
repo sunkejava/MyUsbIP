@@ -107,23 +107,102 @@ public sealed class UsbDkDeviceManager : IDisposable
         return devices.Values.ToArray();
     }
 
-    public Task ShareAsync(string busId, CancellationToken cancellationToken = default)
+    public async Task ShareAsync(string busId, CancellationToken cancellationToken = default)
     {
         EnsureWindows();
         cancellationToken.ThrowIfCancellationRequested();
-        if (redirected.ContainsKey(busId)) return Task.CompletedTask;
+        if (redirected.ContainsKey(busId)) return;
 
-        var native = FindNativeDevice(busId)
-                     ?? throw new InvalidOperationException($"UsbDk 设备 {busId} 不存在。 ");
+        // UsbDk 控制设备本身是串行队列，同一时刻只允许一个 Redirect 建立过程。
+        // 多个设备同时 StartRedirect 只会互相放大 PnP 抖动，并使 GetDevicesList 更容易失败。
+        await redirectGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        Interlocked.Increment(ref redirectOperations);
+        try
+        {
+            if (redirected.ContainsKey(busId)) return;
 
-        var id = native.Id;
-        var handle = UsbDkNative.UsbDk_StartRedirect(ref id);
-        if (handle == 0 || handle == UsbDkNative.InvalidHandleValue)
-            UsbDkNative.ThrowLastWin32($"UsbDk_StartRedirect({busId}) 失败");
+            var native = FindNativeDeviceWithCache(busId)
+                         ?? throw new InvalidOperationException($"UsbDk 设备 {busId} 不存在。 ");
 
-        var device = new RedirectedDevice(native, handle, ReadConfigurationDescriptors(native));
-        if (!redirected.TryAdd(busId, device)) UsbDkNative.UsbDk_StopRedirect(handle);
-        return Task.CompletedTask;
+            var isCh340 = IsCh340(native);
+            WindowsDeviceRecovery.Identity? recoveryIdentity = null;
+            if (isCh340)
+            {
+                recoveryIdentity = WindowsDeviceRecovery.ResolveIdentity(
+                    native.Id.DeviceId,
+                    native.Id.InstanceId);
+
+                if (recoveryIdentity is not null)
+                    ch340RecoveryIdentities[busId] = recoveryIdentity;
+                else
+                    ch340RecoveryIdentities.TryGetValue(busId, out recoveryIdentity);
+            }
+
+            await eventSink.WriteAsync(new(DateTimeOffset.Now, "usbdk.redirect.start", "Information", null,
+                busId, null, $"开始 UsbDk Redirect {ToVidPid(native)}",
+                new Dictionary<string, object?>
+                {
+                    ["deviceId"] = native.Id.DeviceId,
+                    ["instanceId"] = native.Id.InstanceId,
+                    ["fullInstanceId"] = recoveryIdentity?.FullInstanceId,
+                    ["isCh340"] = isCh340,
+                }), CancellationToken.None);
+
+            var id = native.Id;
+            var handle = await Task.Run(() =>
+            {
+                var redirectId = id;
+                return UsbDkNative.UsbDk_StartRedirect(ref redirectId);
+            }).ConfigureAwait(false);
+
+            if (handle == 0 || handle == UsbDkNative.InvalidHandleValue)
+            {
+                var nativeError = Marshal.GetLastWin32Error();
+                string? recoveryDetail = null;
+
+                if (isCh340 && recoveryIdentity is not null)
+                    recoveryDetail = await RecoverCh340AfterRedirectFailureAsync(
+                        busId, native, recoveryIdentity, CancellationToken.None).ConfigureAwait(false);
+
+                var exception = new Win32Exception(
+                    nativeError,
+                    $"UsbDk_StartRedirect({busId}) 失败" +
+                    (string.IsNullOrWhiteSpace(recoveryDetail) ? string.Empty : $"；Recovery={recoveryDetail}"));
+
+                await eventSink.WriteAsync(new(DateTimeOffset.Now, "usbdk.redirect.failed", "Error", null,
+                    busId, null, exception.Message,
+                    new Dictionary<string, object?>
+                    {
+                        ["nativeErrorCode"] = nativeError,
+                        ["deviceId"] = native.Id.DeviceId,
+                        ["instanceId"] = native.Id.InstanceId,
+                        ["fullInstanceId"] = recoveryIdentity?.FullInstanceId,
+                        ["recovery"] = recoveryDetail,
+                    }, exception), CancellationToken.None);
+                throw exception;
+            }
+
+            var device = new RedirectedDevice(native, handle, ReadConfigurationDescriptors(native));
+            if (!redirected.TryAdd(busId, device))
+            {
+                UsbDkNative.UsbDk_StopRedirect(handle);
+                return;
+            }
+
+            await eventSink.WriteAsync(new(DateTimeOffset.Now, "usbdk.redirect.ready", "Information", null,
+                busId, null, $"UsbDk Redirect 已建立 {ToVidPid(native)}",
+                new Dictionary<string, object?>
+                {
+                    ["deviceId"] = native.Id.DeviceId,
+                    ["instanceId"] = native.Id.InstanceId,
+                    ["fullInstanceId"] = recoveryIdentity?.FullInstanceId,
+                }), CancellationToken.None);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref redirectOperations);
+            redirectGate.Release();
+        }
     }
 
     /// <summary>标记 Redirect 当前被真实 USB/IP 会话占用，防止 DEVLIST 查询误清理活动设备。</summary>
@@ -156,28 +235,86 @@ public sealed class UsbDkDeviceManager : IDisposable
         return Task.CompletedTask;
     }
 
-    public Task UnshareAsync(string busId, CancellationToken cancellationToken = default)
+    public async Task UnshareAsync(string busId, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        // 先从 Redirect 集合移除，再解除活动保护。这样并发 ListAsync 不会在
-        // StopRedirect 过渡窗口把仍在释放中的 Redirect 当成“非活动幽灵设备”再次清理。
+        if (!redirected.TryGetValue(busId, out var current))
+            return;
+
+        // PumpUrbAsync 已会先逐个 UNLINK；这里再做一道兜底，确保 StopRedirect 前尽量没有遗留 OVERLAPPED。
+        var remaining = await CancelAndDrainPendingTransfersAsync(
+            busId, current, TimeSpan.FromSeconds(5), CancellationToken.None).ConfigureAwait(false);
+        if (remaining > 0)
+        {
+            await eventSink.WriteAsync(new(DateTimeOffset.Now, "usbdk.release.pending-timeout", "Warning", null,
+                busId, null, $"StopRedirect 前仍有 {remaining} 个 URB 未完成，继续关闭 Redirect 句柄以终止会话",
+                new Dictionary<string, object?> { ["pendingCount"] = remaining }), CancellationToken.None);
+        }
+
         if (!redirected.TryRemove(busId, out var device))
-        {
-            activeSessionBusIds.TryRemove(busId, out _);
-            return Task.CompletedTask;
-        }
+            return;
 
-        try
-        {
-            device.Dispose();
-        }
-        finally
-        {
-            activeSessionBusIds.TryRemove(busId, out _);
-        }
+        var native = device.Native;
+        var isCh340 = IsCh340(native);
+        ch340RecoveryIdentities.TryGetValue(busId, out var identity);
 
-        return Task.CompletedTask;
+        await eventSink.WriteAsync(new(DateTimeOffset.Now, "usbdk.release.start", "Information", null,
+            busId, null, $"停止 UsbDk Redirect {ToVidPid(native)}",
+            new Dictionary<string, object?>
+            {
+                ["deviceId"] = native.Id.DeviceId,
+                ["instanceId"] = native.Id.InstanceId,
+                ["fullInstanceId"] = identity?.FullInstanceId,
+                ["isCh340"] = isCh340,
+            }), CancellationToken.None);
+
+        device.Dispose();
+
+        if (isCh340)
+        {
+            // CH340 是本次实机日志中可稳定复现“StopRedirect 后宿主驱动回来，
+            // 但下一次 StartRedirect 等满 UsbDk 内核 120 秒并拖死 GetDevicesList”的设备。
+            // 因此释放后主动重启一次叶子设备栈，让 CH341SER/UsbDk filter 从干净状态重新绑定。
+            identity ??= await ResolveRecoveryIdentityAsync(native, TimeSpan.FromSeconds(5), CancellationToken.None)
+                .ConfigureAwait(false);
+
+            if (identity is not null)
+            {
+                ch340RecoveryIdentities[busId] = identity;
+                var recoveryDetail = WindowsDeviceRecovery.TryRestart(identity, out var detail)
+                    ? detail
+                    : "restart-failed: " + detail;
+
+                var stable = await WaitForNativeDeviceStableAsync(
+                    native, identity, TimeSpan.FromSeconds(10), CancellationToken.None).ConfigureAwait(false);
+
+                await eventSink.WriteAsync(new(DateTimeOffset.Now,
+                    stable ? "usbdk.ch340.release.recovered" : "usbdk.ch340.release.recovery-failed",
+                    stable ? "Information" : "Warning",
+                    null, busId, null,
+                    stable
+                        ? $"CH340 已归还宿主驱动并完成 PnP 重启，下一次 Redirect 可重新建立。{recoveryDetail}"
+                        : $"CH340 StopRedirect 后未在 10 秒内恢复为稳定 UsbDk 可枚举状态。{recoveryDetail}",
+                    new Dictionary<string, object?>
+                    {
+                        ["fullInstanceId"] = identity.FullInstanceId,
+                        ["parentInstanceId"] = identity.ParentInstanceId,
+                        ["stable"] = stable,
+                        ["recovery"] = recoveryDetail,
+                    }), CancellationToken.None);
+            }
+            else
+            {
+                await eventSink.WriteAsync(new(DateTimeOffset.Now, "usbdk.ch340.release.identity-missing", "Warning", null,
+                    busId, null, "CH340 StopRedirect 后未能解析完整 PnP InstanceId，无法执行定向设备栈重启",
+                    new Dictionary<string, object?>
+                    {
+                        ["deviceId"] = native.Id.DeviceId,
+                        ["instanceId"] = native.Id.InstanceId,
+                    }), CancellationToken.None);
+            }
+        }
     }
 
     public Task<UsbIpSubmitCompletion> SubmitAsync(string busId, UsbIpSubmitRequest request, CancellationToken cancellationToken = default)
