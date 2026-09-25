@@ -260,7 +260,10 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
     {
         using var writeGate = new SemaphoreSlim(1, 1);
         using var sessionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var pending = new ConcurrentDictionary<uint, Task>();
+        // 保存“请求已彻底退出”的完成信号，而不是直接保存 ProcessSubmitAsync 返回的 Task。
+        // 若底层同步完成，async 方法可能在调用方把 Task 放进字典前就进入 finally 并执行 TryRemove，
+        // 随后调用方再写回已完成 Task 会留下永久脏项，最终造成重复 Sequence / pending 数量误判。
+        var pending = new ConcurrentDictionary<uint, TaskCompletionSource>();
 
         async Task WriteSubmitAsync(UsbIpSubmitCompletion completion)
         {
@@ -323,7 +326,8 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
             }
             finally
             {
-                pending.TryRemove(request.Sequence, out _);
+                if (pending.TryRemove(request.Sequence, out var completionSignal))
+                    completionSignal.TrySetResult();
             }
         }
 
@@ -339,10 +343,12 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
                         var request = await UsbIpWire.ReadSubmitAsync(stream, basic.Sequence, basic.DeviceId,
                             basic.Direction, basic.Endpoint, sessionCts.Token).ConfigureAwait(false);
 
-                        if (pending.ContainsKey(request.Sequence))
+                        if (pending.Count >= 512)
+                            throw new InvalidDataException("单个 USB/IP 会话在途 URB 超过 512，已拒绝继续提交。 ");
+
+                        var completionSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                        if (!pending.TryAdd(request.Sequence, completionSignal))
                             throw new InvalidDataException($"收到重复的在途 USB/IP Sequence={request.Sequence}。 ");
-                        if (pending.Count >= 4096)
-                            throw new InvalidDataException("单个 USB/IP 会话在途 URB 超过 4096，已拒绝继续提交。 ");
 
                         if (logging.LogSuccessfulUrbs)
                         {
@@ -357,8 +363,7 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
                                 }), CancellationToken.None);
                         }
 
-                        var task = ProcessSubmitAsync(request);
-                        pending[request.Sequence] = task;
+                        _ = ProcessSubmitAsync(request);
                         break;
                     }
                     case UsbIpDataCommands.CmdUnlink:
@@ -403,10 +408,23 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
                 try { await transport.CancelAsync(busId, sequence, CancellationToken.None).ConfigureAwait(false); } catch { }
             }
 
-            var current = pending.Values.ToArray();
+            var current = pending.Values.Select(x => x.Task).ToArray();
             if (current.Length > 0)
             {
-                try { await Task.WhenAll(current).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); } catch { }
+                try
+                {
+                    await Task.WhenAll(current).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                }
+                catch (TimeoutException)
+                {
+                    await eventSink.WriteAsync(new(DateTimeOffset.Now, "native.urb.drain.timeout", "Warning", sessionId,
+                        busId, remote, $"会话退出时仍有 {pending.Count} 个 URB 未在 5 秒内完成取消/回收",
+                        new Dictionary<string, object?> { ["pendingCount"] = pending.Count }), CancellationToken.None);
+                }
+                catch
+                {
+                    // 单个 URB 的具体异常已在 ProcessSubmitAsync 中记录；清理路径继续进入 EndSession。
+                }
             }
         }
     }
