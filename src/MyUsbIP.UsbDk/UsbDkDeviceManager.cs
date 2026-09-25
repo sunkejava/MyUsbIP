@@ -127,9 +127,24 @@ public sealed class UsbDkDeviceManager : IDisposable
     public Task UnshareAsync(string busId, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        activeSessionBusIds.TryRemove(busId, out _);
-        if (!redirected.TryRemove(busId, out var device)) return Task.CompletedTask;
-        device.Dispose();
+
+        // 先从 Redirect 集合移除，再解除活动保护。这样并发 ListAsync 不会在
+        // StopRedirect 过渡窗口把仍在释放中的 Redirect 当成“非活动幽灵设备”再次清理。
+        if (!redirected.TryRemove(busId, out var device))
+        {
+            activeSessionBusIds.TryRemove(busId, out _);
+            return Task.CompletedTask;
+        }
+
+        try
+        {
+            device.Dispose();
+        }
+        finally
+        {
+            activeSessionBusIds.TryRemove(busId, out _);
+        }
+
         return Task.CompletedTask;
     }
 
@@ -235,7 +250,8 @@ public sealed class UsbDkDeviceManager : IDisposable
                 TransferType = (ulong)transferType,
             }, requestPtr, false);
 
-            pendingTransfers[pendingKey] = pending;
+            if (!pendingTransfers.TryAdd(pendingKey, pending))
+                throw new InvalidDataException($"检测到重复 USB/IP SUBMIT Sequence={request.Sequence}，BusId={busId}。");
 
             UsbDkTransferResult result;
             lock (pending.SyncRoot)
@@ -275,7 +291,10 @@ public sealed class UsbDkDeviceManager : IDisposable
             var nativeRequest = Marshal.PtrToStructure<UsbDkTransferRequest>(requestPtr);
             var transferred = checked((int)Math.Min((ulong)int.MaxValue, nativeRequest.Result.Generic.BytesTransferred));
             var status = nativeRequest.Result.Generic.UsbdStatus == 0 ? 0 : -5;
-            var actualLength = Math.Max(0, transferred);
+            // USB/IP actual_length 不能大于客户端请求长度。虽然正常 UsbDk 不会越界返回，
+            // 但一旦底层异常值大于 dataLength，若头部仍写原始长度而 Payload 被截断，
+            // 客户端会继续等待不存在的字节并导致后续 USB/IP 帧整体错位。
+            var actualLength = Math.Min(dataLength, Math.Max(0, transferred));
 
             byte[] payload = Array.Empty<byte>();
             if (request.Direction != 0 && actualLength > 0)
