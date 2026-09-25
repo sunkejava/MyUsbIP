@@ -251,8 +251,18 @@ public sealed class UsbDkDeviceManager : IDisposable
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (!redirected.TryGetValue(busId, out var current))
+        if (!redirected.ContainsKey(busId))
             return;
+
+        // StopRedirect、PnP 重启以及恢复后的稳定确认都属于 UsbDk 控制平面操作。
+        // 整个窗口与 StartRedirect 使用同一把门，并设置 Busy 标志，让 DEVLIST/status 只读缓存，
+        // 避免释放 CH340 时客户端查询再次向 UsbDk 控制设备插入 IOCTL。
+        await redirectGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        Interlocked.Increment(ref redirectOperations);
+        try
+        {
+            if (!redirected.TryGetValue(busId, out var current))
+                return;
 
         // PumpUrbAsync 已会先逐个 UNLINK；这里再做一道兜底，确保 StopRedirect 前尽量没有遗留 OVERLAPPED。
         var remaining = await CancelAndDrainPendingTransfersAsync(
@@ -326,6 +336,12 @@ public sealed class UsbDkDeviceManager : IDisposable
                         ["instanceId"] = native.Id.InstanceId,
                     }), CancellationToken.None);
             }
+        }
+        }
+        finally
+        {
+            Interlocked.Decrement(ref redirectOperations);
+            redirectGate.Release();
         }
     }
 
