@@ -63,6 +63,7 @@ try
     else InstallClient(baseDir, dependencyPath, package, Write);
 
     Write("安装与内置自检全部完成。");
+    EmbeddedPayload.TryCleanupWorkingDirectory(baseDir, role);
     Write($"安装日志: {logPath}");
     Console.WriteLine("\n安装成功。按任意键关闭窗口。");
     Console.ReadKey(true);
@@ -160,10 +161,20 @@ static void InstallServer(string baseDir, string dependencyPath, Action<string> 
     var payload = Path.Combine(baseDir, "payload", "server");
     if (!Directory.Exists(payload)) throw new DirectoryNotFoundException($"缺少服务端程序目录: {payload}");
 
-    write("安装/更新 UsbDk...");
-    var msiLog = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "MyUsbIP", "InstallerLogs", "usbdk-msi.log");
-    var code = RunArgs("msiexec.exe", "/i", dependencyPath, "/qn", "/norestart", "/l*v", msiLog);
-    if (code is not (0 or 3010)) throw new InvalidOperationException($"UsbDk 安装失败，ExitCode={code}，日志={msiLog}");
+    if (IsUsbDkHealthy())
+    {
+        write("检测到 UsbDk 驱动与 Runtime Library 已正常安装，跳过重复 MSI 安装。");
+    }
+    else
+    {
+        write("安装/修复 UsbDk...");
+        var msiLog = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "MyUsbIP", "InstallerLogs", "usbdk-msi.log");
+        var code = RunArgs("msiexec.exe", "/i", dependencyPath, "/qn", "/norestart", "/l*v", msiLog);
+        if (code == 3010)
+            throw new InvalidOperationException($"UsbDk 安装完成但 Windows 要求重启。请先重启系统后再运行安装器，日志={msiLog}");
+        if (code != 0)
+            throw new InvalidOperationException($"UsbDk 安装失败，ExitCode={code}，日志={msiLog}");
+    }
 
     write("部署服务端程序...");
     CopyDirectory(payload, installDir, new[] { "appsettings.json" });
@@ -175,10 +186,11 @@ static void InstallServer(string baseDir, string dependencyPath, Action<string> 
     var daemon = Path.Combine(installDir, "myusbipd.exe");
     var config = Path.Combine(installDir, "appsettings.json");
     if (!File.Exists(daemon) || !File.Exists(config)) throw new InvalidOperationException("服务端程序发布文件不完整。");
+    var serverPort = ReadServerPort(config);
 
-    write("配置 Windows 防火墙...");
+    write($"配置 Windows 防火墙，TCP {serverPort}...");
     RunArgs("netsh.exe", "advfirewall", "firewall", "delete", "rule", "name=MyUsbIP USB-IP Server");
-    EnsureSuccess(RunArgs("netsh.exe", "advfirewall", "firewall", "add", "rule", "name=MyUsbIP USB-IP Server", "dir=in", "action=allow", "protocol=TCP", "localport=3240", "profile=any"), "创建防火墙规则");
+    EnsureSuccess(RunArgs("netsh.exe", "advfirewall", "firewall", "add", "rule", "name=MyUsbIP USB-IP Server", "dir=in", "action=allow", "protocol=TCP", $"localport={serverPort}", "profile=any"), "创建防火墙规则");
 
     write("配置 SYSTEM 开机自动启动任务...");
     RunArgs("schtasks.exe", "/Delete", "/TN", "MyUsbIP USB-IP Server", "/F");
@@ -191,8 +203,8 @@ static void InstallServer(string baseDir, string dependencyPath, Action<string> 
     write("执行服务端自检...");
     var usbdk = RunCaptureArgs("sc.exe", "query", "UsbDk");
     if (usbdk.ExitCode != 0) throw new InvalidOperationException("未检测到 UsbDk 驱动服务。\n" + usbdk.Output);
-    if (!WaitPort(3240, TimeSpan.FromSeconds(20))) throw new InvalidOperationException("MyUsbIP 已启动但 TCP 3240 未监听。请查看 ProgramData\\MyUsbIP\\InstallerLogs 与 ServerLogs。 ");
-    write("服务端自检通过：UsbDk 正常，TCP 3240 正常监听。");
+    if (!WaitPort(serverPort, TimeSpan.FromSeconds(20))) throw new InvalidOperationException($"MyUsbIP 已启动但 TCP {serverPort} 未监听。请查看 ProgramData\\MyUsbIP\\InstallerLogs 与 ServerLogs。 ");
+    write($"服务端自检通过：UsbDk 正常，TCP {serverPort} 正常监听。");
 }
 
 static void InstallClient(string baseDir, string dependencyPath, DependencyPackage package, Action<string> write)
@@ -311,7 +323,11 @@ static int RunArgs(string fileName, params string[] args)
 {
     using var process = Process.Start(CreateStart(fileName, false, args));
     if (process is null) return -1;
-    process.WaitForExit();
+    if (!process.WaitForExit((int)TimeSpan.FromMinutes(5).TotalMilliseconds))
+    {
+        try { process.Kill(entireProcessTree: true); } catch { }
+        return -2;
+    }
     return process.ExitCode;
 }
 
@@ -321,9 +337,40 @@ static (int ExitCode, string Output) RunCaptureArgs(string fileName, params stri
     if (process is null) return (-1, "进程启动失败");
     var stdoutTask = process.StandardOutput.ReadToEndAsync();
     var stderrTask = process.StandardError.ReadToEndAsync();
-    process.WaitForExit();
+    if (!process.WaitForExit((int)TimeSpan.FromSeconds(60).TotalMilliseconds))
+    {
+        try { process.Kill(entireProcessTree: true); } catch { }
+        return (-2, $"命令执行超过 60 秒已终止: {fileName}");
+    }
     Task.WaitAll(stdoutTask, stderrTask);
     return (process.ExitCode, stdoutTask.Result + Environment.NewLine + stderrTask.Result);
+}
+
+static bool IsUsbDkHealthy()
+{
+    var helper = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "UsbDk Runtime Library", "UsbDkHelper.dll");
+    if (!File.Exists(helper)) return false;
+    var service = RunCaptureArgs("sc.exe", "query", "UsbDk");
+    return service.ExitCode == 0;
+}
+
+static int ReadServerPort(string configPath)
+{
+    try
+    {
+        using var document = JsonDocument.Parse(File.ReadAllText(configPath));
+        if (document.RootElement.TryGetProperty("NativeServer", out var nativeServer) &&
+            nativeServer.TryGetProperty("Port", out var portElement) &&
+            portElement.TryGetInt32(out var port) &&
+            port is > 0 and <= 65535)
+            return port;
+    }
+    catch
+    {
+        // 配置损坏由 daemon 自己给出更完整的错误；安装阶段仍按标准端口执行自检。
+    }
+
+    return 3240;
 }
 
 static void EnsureSuccess(int exitCode, string operation)
