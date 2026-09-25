@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.1.14
+
+本版本对 v1.1.13 进行完整稳定性、安装/发布链路与产物体积审计，不回退 usbip-win2 0.9.8.0，也不改动已验证的标准 USB/IP 主数据协议。
+
+- 修复 UsbDk 会话释放竞态：BUSID 会话占用现在保持到 StopRedirect 与宿主驱动稳定回绑全部完成，避免旧会话清理过程中新的 IMPORT 抢占后又被旧 EndSession 关闭 Redirect。
+- JSONL 异常日志新增 Win32Exception NativeErrorCode、十六进制错误码与原生错误消息；UsbDk_StartRedirect/CancelIoEx 等失败可直接定位真实 Win32 错误。
+- Windows Server 安装器检测到 UsbDk 驱动与 Runtime Library 健康时跳过重复 MSI 安装，减少覆盖升级导致整机 USB/PnP 重枚举的扰动。
+- UsbDk 与 usbip-win2 安装返回 3010（需要重启）时不再继续启动/自检，明确要求重启后重新运行安装器。
+- Server 防火墙与启动自检读取实际 NativeServer.Port，不再固定写死 TCP 3240。
+- 外部驱动/系统命令增加超时与进程终止保护，避免安装器因 msiexec/第三方安装程序异常永久卡死。
+- 安装成功后清理 ProgramData 下的临时 SetupCache，避免长期残留完整 payload/驱动副本。
+- Windows 依赖完整性改为仓库预先固定 SHA256：UsbDk 1.0.22 x64 = 91f6f695e1e13c656024e6d3b55620bf08d8835ef05ee0496935ba6bb62466a5；usbip-win2 0.9.8.0 x64 保持 81f426741f7ee2ed991febe24a22daca8400b6ae2f171054e3fb404897e15d39。CI 发布时只下载并验证，不再现场生成 hash。
+- Windows CLI、Daemon 与 Setup 启用 .NET single-file 压缩。
+- Server/Client Setup 改为分别构建：Server 只嵌 daemon + UsbDk，Client 只嵌 CLI + usbip-win2，不再把两端 payload 与两个驱动重复塞进同一个 EXE。
+- Windows 备用 ZIP 不再重复包含 Setup EXE，并且只携带对应角色的离线驱动依赖，显著降低 Release 资产体积。
+- CI 增加发布产物体积报告及 Win32 原生错误码 JSONL 回归测试。
+- README 同步到当前 StopRedirect + 精确 CancelIoEx + 稳定回绑生命周期。
+
+## 1.1.13
+
+- Detach/TCP 断开后不再长期保留旧 Redirect Handle，执行 UsbDk_StopRedirect 将设备归还 Windows 原生驱动。
+- 不再在释放会话时调用 UsbDk_ResetDevice，避免 CH340 等设备因端口复位触发额外 PnP/驱动栈重建。
+- StopRedirect 后等待同一物理设备连续稳定枚举三次，再认为宿主驱动回绑完成。
+- 保留 v1.1.12 的精确单 URB CancelIoEx 取消策略。
+
+## 1.1.12
+
+- UsbDk Pending Transfer 增加 OVERLAPPED 精确跟踪。
+- USB/IP UNLINK/断线取消改为 CancelIoEx(systemHandle, overlapped)，不再用端点级 AbortPipe/ResetPipe 取消单个请求。
+- 避免 CH340 同一 Bulk-IN 端点存在多个并发读时，一个 UNLINK 误取消其他读请求导致随机丢反馈。
+
 ## 1.1.6
 
 针对 usbip-win2 0.9.8.0 最新正式版进行完整兼容性复核，并修复严格 DEVLIST 解析、命令输出编码、接口元数据和客户端参数适配问题。
