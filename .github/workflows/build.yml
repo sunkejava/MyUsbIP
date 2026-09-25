@@ -51,9 +51,9 @@ jobs:
             ./scripts/windows/Validate-Dependencies.ps1
           }
       - name: Publish CLI self-contained single file
-        run: dotnet publish tools/MyUsbIP.Cli/MyUsbIP.Cli.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o artifacts/${{ matrix.rid }}/cli
+        run: dotnet publish tools/MyUsbIP.Cli/MyUsbIP.Cli.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o artifacts/${{ matrix.rid }}/cli
       - name: Publish Daemon self-contained single file
-        run: dotnet publish apps/MyUsbIP.Daemon/MyUsbIP.Daemon.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o artifacts/${{ matrix.rid }}/daemon
+        run: dotnet publish apps/MyUsbIP.Daemon/MyUsbIP.Daemon.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o artifacts/${{ matrix.rid }}/daemon
       - name: Prepare embedded Windows setup payload
         if: matrix.rid == 'win-x64' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))
         shell: pwsh
@@ -70,10 +70,12 @@ jobs:
           if (-not $serverPkg -or -not $clientPkg) { throw '依赖清单缺少 server/client 包。' }
           Copy-Item (Join-Path 'dependencies/cache' $serverPkg.fileName) "$embed/server-dependency.bin" -Force
           Copy-Item (Join-Path 'dependencies/cache' $clientPkg.fileName) "$embed/client-dependency.bin" -Force
-      - name: Publish Windows double-click setup
+      - name: Publish Windows role-specific double-click setup
         if: matrix.rid == 'win-x64'
         shell: pwsh
-        run: dotnet publish tools/MyUsbIP.WindowsSetup/MyUsbIP.WindowsSetup.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o artifacts/win-x64/setup
+        run: |
+          dotnet publish tools/MyUsbIP.WindowsSetup/MyUsbIP.WindowsSetup.csproj -c Release -r win-x64 --self-contained true -p:SetupRole=server -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o artifacts/win-x64/setup/server
+          dotnet publish tools/MyUsbIP.WindowsSetup/MyUsbIP.WindowsSetup.csproj -c Release -r win-x64 --self-contained true -p:SetupRole=client -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o artifacts/win-x64/setup/client
       - name: Build Windows deployment bundles
         if: matrix.rid == 'win-x64'
         shell: pwsh
