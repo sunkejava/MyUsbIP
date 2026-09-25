@@ -38,7 +38,11 @@ public sealed class UsbIpDeviceMonitor(IMyUsbIpServer server, IUsbIpEventSink? e
                 continue;
             }
 
-            var current = devices.ToDictionary(GetIdentity, StringComparer.OrdinalIgnoreCase);
+            // UsbDk 的 InstanceId 对无序列号 CH340 常只是端口片段（如 "4"），
+            // 多 Hub/多 CH340 场景可能重复，不能直接作为 Dictionary Key。
+            var current = new Dictionary<string, UsbIpDeviceInfo>(StringComparer.OrdinalIgnoreCase);
+            foreach (var device in devices)
+                current[GetIdentity(device)] = device;
 
             foreach (var pair in current)
             {
@@ -88,9 +92,9 @@ public sealed class UsbIpDeviceMonitor(IMyUsbIpServer server, IUsbIpEventSink? e
     }
 
     private static string GetIdentity(UsbIpDeviceInfo device) =>
-        !string.IsNullOrWhiteSpace(device.InstanceId)
-            ? device.InstanceId
+        !string.IsNullOrWhiteSpace(device.BusId)
+            ? $"{device.BusId}:{device.VidPid}"
             : !string.IsNullOrWhiteSpace(device.SerialNumber)
                 ? $"{device.VidPid}:{device.SerialNumber}"
-                : $"{device.BusId}:{device.VidPid}";
+                : $"{device.VidPid}:{device.InstanceId}";
 }
