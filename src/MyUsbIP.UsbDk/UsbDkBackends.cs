@@ -66,10 +66,12 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
         if (!activeSessions.TryAdd(busId, 0))
             throw new InvalidOperationException($"设备 {busId} 已被其他 USB/IP 会话占用。 ");
 
+        // 在 StartRedirect 前先保护 BUSID，避免并发 DEVLIST 将刚创建/正在创建的 Redirect
+        // 当作非活动快照清理。失败路径会在 catch 中解除保护。
+        manager.MarkSessionActive(busId);
         try
         {
             await manager.ShareAsync(busId, cancellationToken).ConfigureAwait(false);
-            manager.MarkSessionActive(busId);
         }
         catch
         {
@@ -91,8 +93,9 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
     /// </summary>
     public async Task EndSessionAsync(string busId, CancellationToken cancellationToken = default)
     {
-        activeSessions.TryRemove(busId, out _);
-
+        // 注意：直到 StopRedirect + 宿主驱动回绑稳定完成前都必须保留 activeSessions 占用。
+        // 若过早移除，新的 IMPORT 会与旧会话清理并发，造成 CH340 等设备二次 Redirect 失败，
+        // 甚至旧 EndSession 把新会话刚取得的 Redirect 释放掉。
         UsbIpDeviceInfo? releasedDevice = null;
         try
         {
@@ -114,6 +117,7 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
         finally
         {
             manager.MarkSessionInactive(busId);
+            activeSessions.TryRemove(busId, out _);
         }
     }
 
