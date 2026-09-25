@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.ComponentModel;
 using System.Text;
 using MyUsbIP.Abstractions;
 using MyUsbIP.Protocol;
@@ -11,7 +12,9 @@ await TestBusIdAsync();
 await TestDeviceWireMetadataAsync();
 await TestDevListInterfacesAsync();
 await TestDeviceStatusProtocolAsync();
+await TestUsbIpSubmitValidationAsync();
 await TestChineseJsonLogAsync();
+await TestNativeErrorLogAsync();
 TestAutoShareRule();
 await TestLeaseManagerAsync();
 
@@ -156,6 +159,55 @@ async Task TestDeviceStatusProtocolAsync()
     }
 }
 
+async Task TestUsbIpSubmitValidationAsync()
+{
+    var body = new byte[UsbIpWire.SubmitBodySize];
+    BinaryPrimitives.WriteInt32BigEndian(body.AsSpan(4, 4), UsbIpWire.MaxTransferBufferLength + 1);
+    await using (var stream = new MemoryStream(body))
+    {
+        var rejected = false;
+        try
+        {
+            await UsbIpWire.ReadSubmitAsync(stream, 1, 1, 1, 2);
+        }
+        catch (InvalidDataException)
+        {
+            rejected = true;
+        }
+        Assert(rejected, "USB/IP IN 超大 transfer_buffer_length 应被拒绝，避免非托管大内存分配");
+    }
+
+    var invalidDirectionBody = new byte[UsbIpWire.SubmitBodySize];
+    await using (var stream = new MemoryStream(invalidDirectionBody))
+    {
+        var rejected = false;
+        try
+        {
+            await UsbIpWire.ReadSubmitAsync(stream, 2, 1, 2, 2);
+        }
+        catch (InvalidDataException)
+        {
+            rejected = true;
+        }
+        Assert(rejected, "USB/IP 非法 direction 应被拒绝");
+    }
+
+    await using (var stream = new MemoryStream())
+    {
+        var rejected = false;
+        try
+        {
+            await UsbIpWire.WriteSubmitCompletionAsync(stream,
+                new UsbIpSubmitCompletion(3, 1, 1, 2, 0, 4, 0, 0, 0, new byte[3]));
+        }
+        catch (InvalidDataException)
+        {
+            rejected = true;
+        }
+        Assert(rejected, "RET_SUBMIT IN Payload 与 actual_length 不一致时应拒绝写出，避免 USB/IP 帧错位");
+    }
+}
+
 async Task TestChineseJsonLogAsync()
 {
     var path = Path.Combine(Path.GetTempPath(), $"myusbip-smoke-{Guid.NewGuid():N}.jsonl");
@@ -170,6 +222,27 @@ async Task TestChineseJsonLogAsync()
         var text = await File.ReadAllTextAsync(path, Encoding.UTF8);
         Assert(text.Contains("中文日志可以直接阅读", StringComparison.Ordinal), "JSONL 中文被编码为 Unicode 转义");
         Assert(!text.Contains("\\u4e2d\\u6587", StringComparison.OrdinalIgnoreCase), "JSONL 不应包含中文 Unicode 转义");
+    }
+    finally
+    {
+        try { File.Delete(path); } catch { }
+    }
+}
+
+async Task TestNativeErrorLogAsync()
+{
+    var path = Path.Combine(Path.GetTempPath(), $"myusbip-smoke-win32-{Guid.NewGuid():N}.jsonl");
+    try
+    {
+        await using (var sink = new JsonLinesUsbIpEventSink(path))
+        {
+            await sink.WriteAsync(new UsbIpEvent(DateTimeOffset.Now, "smoke.win32", "Error", null,
+                "0000002F-00000004", null, "Win32 诊断", Exception: new Win32Exception(5, "Access denied")));
+        }
+
+        var text = await File.ReadAllTextAsync(path, Encoding.UTF8);
+        Assert(text.Contains("\"nativeErrorCode\":5", StringComparison.Ordinal),
+            "Win32Exception.NativeErrorCode 未写入结构化日志");
     }
     finally
     {
