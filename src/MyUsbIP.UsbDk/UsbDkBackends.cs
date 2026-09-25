@@ -41,6 +41,8 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
 {
     private readonly UsbDkDeviceManager manager;
     private readonly ConcurrentDictionary<string, byte> activeSessions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, uint> speedCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, DescriptorMetadata> descriptorCache = new(StringComparer.OrdinalIgnoreCase);
 
     public UsbDkExportTransport(UsbDkDeviceManager manager)
         => this.manager = manager ?? throw new ArgumentNullException(nameof(manager));
@@ -48,12 +50,42 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
     public async Task<IReadOnlyList<UsbIpDeviceInfo>> ListAsync(CancellationToken cancellationToken = default)
     {
         var devices = await manager.ListAsync(cancellationToken).ConfigureAwait(false);
-        var speeds = ReadNativeSpeeds();
-        return devices.Select(x => DecorateWireMetadata(
-            x,
-            activeSessions.ContainsKey(x.BusId),
-            speeds.TryGetValue(x.BusId, out var speed) ? speed : x.Speed,
-            TryReadDescriptorMetadata(x.BusId))).ToArray();
+        var controlBusy = manager.IsControlPlaneBusy;
+
+        // UsbDk_StartRedirect 可能在内核控制队列等待很久。此时禁止再调用
+        // GetDevicesList/GetConfigurationDescriptor，否则一个 CH340 重连会把所有 DEVLIST/status 一起拖死。
+        if (!controlBusy)
+        {
+            foreach (var pair in ReadNativeSpeeds())
+                speedCache[pair.Key] = pair.Value;
+        }
+
+        var result = new List<UsbIpDeviceInfo>(devices.Count);
+        foreach (var device in devices)
+        {
+            DescriptorMetadata descriptor;
+            if (controlBusy)
+            {
+                descriptorCache.TryGetValue(device.BusId, out descriptor);
+            }
+            else
+            {
+                descriptor = TryReadDescriptorMetadata(device.BusId);
+                if (descriptor.HasValue)
+                    descriptorCache[device.BusId] = descriptor;
+            }
+
+            var speed = speedCache.TryGetValue(device.BusId, out var cachedSpeed)
+                ? cachedSpeed
+                : device.Speed;
+            result.Add(DecorateWireMetadata(
+                device,
+                activeSessions.ContainsKey(device.BusId),
+                speed,
+                descriptor));
+        }
+
+        return result;
     }
 
     public async Task<UsbIpDeviceInfo?> FindAsync(string busId, CancellationToken cancellationToken = default)
@@ -66,10 +98,12 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
         if (!activeSessions.TryAdd(busId, 0))
             throw new InvalidOperationException($"设备 {busId} 已被其他 USB/IP 会话占用。 ");
 
+        // ShareAsync 进入 UsbDk 控制队列前先保护 BUSID，避免并发 DEVLIST 的幽灵设备清理
+        // 在 Redirect 创建过程中错误释放同一物理设备。
+        manager.MarkSessionActive(busId);
         try
         {
             await manager.ShareAsync(busId, cancellationToken).ConfigureAwait(false);
-            manager.MarkSessionActive(busId);
         }
         catch
         {
@@ -295,7 +329,12 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
         byte ConfigurationCount,
         byte ConfigurationValue,
         byte InterfaceCount,
-        IReadOnlyList<UsbIpInterfaceInfo>? InterfaceItems);
+        IReadOnlyList<UsbIpInterfaceInfo>? InterfaceItems)
+    {
+        public bool HasValue =>
+            UsbVersion != 0 || DeviceVersion != 0 || DeviceClass != 0 ||
+            ConfigurationCount != 0 || InterfaceItems is { Count: > 0 };
+    }
 
     /// <summary>
     /// UsbDk Speed：1=Low、2=Full、3=High、4=Super；
