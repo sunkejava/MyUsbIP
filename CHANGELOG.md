@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.1.15
+
+本版本针对 Windows + CH340 (1A86:7523) 实机日志中“首次连接正常、Detach 后再次 Attach 卡住约 120 秒、期间整个 DEVLIST 短暂不可用、随后服务端串口设备消失”的问题进行专项修复。
+
+- 根据 2026-09-25 实机日志确认：Detach 成功后 CH340 仍能正常出现在 DEVLIST；真正故障发生于第二次 UsbDk_StartRedirect，最终返回 Win32 1167 (ERROR_DEVICE_NOT_CONNECTED)。
+- 修复 CH340 StopRedirect 后仅“看见设备”但驱动栈尚未适合再次捕获的问题：保存完整 PnP InstanceId 与父 USB 节点，释放后使用 DIF_PROPERTYCHANGE / DICS_PROPCHANGE 定向重启 CH340 设备栈。
+- 若目标 CH340 叶子 DevNode 暂时不可用，自动回退到父 USB Hub 的 CM_Reenumerate_DevNode，让总线重新枚举子设备。
+- StopRedirect 前先精确取消并等待在途 OVERLAPPED URB 回收，减少 CH341SER/UsbDk filter 在旧 I/O 尚未退出时切换驱动栈。
+- StartRedirect、StopRedirect、CH340 PnP 恢复与稳定确认统一串行化到 UsbDk 控制平面，避免不同请求同时向 UsbDk 控制设备提交冲突 IOCTL。
+- 新增 UsbDk 最近成功枚举快照；Redirect/PnP 恢复进行中，DEVLIST 与设备状态查询改用缓存 + Windows PRESENT 校验，避免单个 CH340 StartRedirect 阻塞时拖垮整个服务端列表。
+- UsbDk 控制平面 Busy 时不再额外调用 GetDevicesList/GetConfigurationDescriptor 获取速度和描述符，而使用已缓存元数据。
+- 修复多 Hub/多 CH340 场景中 UsbDk 短 InstanceId（例如 "4"）重复导致设备监控 Dictionary 键冲突的问题，监控身份优先使用 BUSID。
+- Server JSONL 新增 usbdk.redirect.*、usbdk.release.*、usbdk.ch340.release.*、usbdk.list.cache-fallback 等恢复事件，后续实机回归可直接定位具体阶段。
+- Windows/Linux Build、Smoke Tests、self-contained publish、Windows Setup 与 Bundle 构建通过后发布；物理 CH340 的最终时序仍需目标机器复测。
+
 ## 1.1.14
 
 本版本对 v1.1.13 进行完整稳定性、安装/发布链路与产物体积审计，不回退 usbip-win2 0.9.8.0，也不改动已验证的标准 USB/IP 主数据协议。
