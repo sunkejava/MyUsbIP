@@ -2,7 +2,7 @@
 
 基于 **.NET 10 + 标准 USB/IP** 的跨平台 USB 网络共享封装，目标是为 Windows/Linux 提供一套可维护、可诊断、可自动恢复的 VirtualHere 替代方案。
 
-> 当前稳定版本：**v1.1.6**
+> 当前稳定版本：**v1.1.14**
 
 ## Windows 推荐架构
 
@@ -34,7 +34,7 @@ Windows Release 采用 **self-contained + single-file** 发布，目标机器无
 MyUsbIP-Server-Setup.exe
 ```
 
-安装器自动完成管理员提权、UsbDk 校验与安装、服务端部署、防火墙、SYSTEM 开机启动任务、启动和自检。
+安装器自动完成管理员提权、UsbDk 健康检测/按需安装、服务端部署、按实际 NativeServer.Port 配置防火墙、SYSTEM 开机启动任务、启动和自检。驱动安装若要求重启会明确停止后续启动流程。
 
 ### 客户端
 
@@ -44,7 +44,7 @@ MyUsbIP-Server-Setup.exe
 MyUsbIP-Client-Setup.exe
 ```
 
-安装器自动完成管理员提权、usbip-win2 0.9.8.0 UDE/VHCI 安装或复用、CLI 部署、PATH 配置和驱动自检。
+安装器自动完成管理员提权、usbip-win2 0.9.8.0 UDE/VHCI 安装或复用、CLI 部署、PATH 配置和驱动自检；驱动安装要求重启时不会继续执行半完成状态下的自检。
 
 **最终用户无需执行任何 PowerShell、CMD 或 BAT 安装/测试脚本。** `scripts/windows` 只保留给项目维护和 CI 使用。
 
@@ -56,7 +56,7 @@ C:\ProgramData\MyUsbIP\InstallerLogs
 
 ## 运行时说明
 
-Windows 发布使用 self-contained 单文件模式，因此 `myusbipd.exe`、`myusbip.exe` 和两个 Setup EXE 均不依赖目标机预装 .NET Runtime。
+Windows 发布使用 self-contained 单文件模式，因此 `myusbipd.exe`、`myusbip.exe` 和两个 Setup EXE 均不依赖目标机预装 .NET Runtime。v1.1.14 起启用 single-file 压缩，并将 Server/Client Setup 拆为各自只嵌入本角色 payload 与驱动依赖；备用 ZIP 不再重复包含 Setup EXE。
 
 服务端日志：
 
@@ -97,9 +97,13 @@ myusbip client diag
 
 ## 设备拔插与 Redirect 生命周期
 
-为了兼容 CH340 等设备在 `UsbDk_StopRedirect -> StartRedirect` 后可能无法二次重定向的问题，MyUsbIP 会在设备仍物理存在时保留 Redirect 句柄和描述符快照。
+当前服务端以“**单会话独占 + 精确取消 URB + Detach 后真正归还宿主驱动**”为准：
 
-设备物理拔出后，服务端使用 Windows Configuration Manager 检查 PnP Device Instance 是否仍处于 Present 状态；已拔出的设备会立即从 Redirect 快照、DEVLIST 和活动会话占用中清理，不应继续出现在 `myusbip client list <host>` 中。重新插入后按新的实时枚举状态重新进入列表。
+- IMPORT 成功后由 UsbDk Redirect 独占真实 USB 设备，同一 BUSID 同时只允许一个活动 USB/IP 会话。
+- USB/IP UNLINK/断线清理优先使用按 OVERLAPPED 的 `CancelIoEx` 精确取消，避免端点级 `AbortPipe/ResetPipe` 误伤同端点其他 CH340 Bulk-IN 请求。
+- Detach/TCP 断开后等待挂起 URB 收尾，再执行 `UsbDk_StopRedirect`，把设备真正归还 Windows 原生驱动栈。
+- StopRedirect 后等待同一物理设备在 UsbDk 原生枚举中连续稳定出现，再释放 BUSID 会话占用；释放过程未完成时不会允许新的 IMPORT 抢占，避免旧会话清理与新会话重定向竞态。
+- 物理拔出后的 Redirect 快照通过 Windows SetupAPI PRESENT USB 枚举进行保守清理，不再把 UsbDk 的短 InstanceId 直接当作完整 PnP InstanceId。
 
 ## 主要能力
 
