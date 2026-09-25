@@ -53,7 +53,7 @@ public sealed class JsonLinesUsbIpEventSink : IUsbIpEventSink, IAsyncDisposable
                 evt.Exception.Message,
                 evt.Exception.StackTrace,
                 evt.Exception.HResult,
-                NativeErrorCode = evt.Exception is Win32Exception win32 ? win32.NativeErrorCode : null,
+                NativeErrorCode = evt.Exception is Win32Exception win32 ? (int?)win32.NativeErrorCode : null,
                 NativeErrorHex = evt.Exception is Win32Exception win32Hex ? $"0x{win32Hex.NativeErrorCode:X8}" : null,
                 NativeErrorMessage = evt.Exception is Win32Exception win32Message ? win32Message.Message : null,
                 InnerType = evt.Exception.InnerException?.GetType().FullName,
