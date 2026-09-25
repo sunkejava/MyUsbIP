@@ -88,6 +88,17 @@ internal sealed class UsbIpProcessRunner(IUsbIpEventSink sink, TimeSpan timeout)
                 }), CancellationToken.None);
             throw new TimeoutException($"执行 {fileName} 超过 {timeout.TotalSeconds:0.#} 秒，已终止进程。 ");
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // 调用方取消时也必须结束第三方 usbip/usbipd 进程。
+            // 否则上层已经认为 Attach 取消，usbip.exe 仍可能在后台继续完成挂载，形成“幽灵连接”。
+            TryKill(process);
+            await sink.WriteAsync(new(DateTimeOffset.Now, "process.cancelled", "Information",
+                Activity.Current?.TraceId.ToString(), busId, host,
+                $"调用方已取消 {operation}，外部进程已终止。",
+                new Dictionary<string, object?> { ["operation"] = operation }), CancellationToken.None);
+            throw;
+        }
         finally
         {
             var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
