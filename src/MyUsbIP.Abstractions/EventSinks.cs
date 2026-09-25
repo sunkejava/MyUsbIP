@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.ComponentModel;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 
@@ -52,6 +53,11 @@ public sealed class JsonLinesUsbIpEventSink : IUsbIpEventSink, IAsyncDisposable
                 evt.Exception.Message,
                 evt.Exception.StackTrace,
                 evt.Exception.HResult,
+                NativeErrorCode = evt.Exception is Win32Exception win32
+                    ? win32.NativeErrorCode
+                    : evt.Exception.InnerException is Win32Exception innerWin32
+                        ? innerWin32.NativeErrorCode
+                        : (int?)null,
                 InnerType = evt.Exception.InnerException?.GetType().FullName,
                 InnerMessage = evt.Exception.InnerException?.Message,
             },
