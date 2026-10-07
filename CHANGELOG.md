@@ -1,6 +1,8 @@
 # Changelog
 
-## 1.1.17 (源码开发版)
+## 1.1.17
+
+2026-10-07 正式发布：[Release v1.1.17](https://github.com/sunkejava/MyUsbIP/releases/tag/v1.1.17)。
 
 - 修复 v1.1.16 的配置源生成回归：配置 DTO 使用可写属性，缺省字段保留初始化值；兼容安装时保留的旧版部分配置。
 - 修复客户端缺少 UsbipWinPath 时向 Process.Start 传入 null 的错误；恢复默认 usbip.exe、120 秒连接超时和 zero-copy 接收模式。

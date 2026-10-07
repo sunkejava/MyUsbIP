@@ -49,7 +49,7 @@ MyUsbIP-Client-Setup.exe --package "D:\Packages\MyUsbIP-Client-win-x64.zip" --ve
 dotnet publish tools/MyUsbIP.Cli/MyUsbIP.Cli.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o artifacts/win-x64/cli
 dotnet publish apps/MyUsbIP.Daemon/MyUsbIP.Daemon.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o artifacts/win-x64/daemon
 ./scripts/windows/Install-Dependencies.ps1 -Role All
-./scripts/windows/Build-WindowsBundles.ps1 -ReleaseTag v1.1.16
+./scripts/windows/Build-WindowsBundles.ps1 -ReleaseTag v1.1.17
 ./scripts/windows/Build-WindowsSetups.ps1
 ./scripts/windows/Test-WindowsSetups.ps1
 ```
@@ -62,12 +62,14 @@ Windows CI 不安装真实驱动，使用 `--verify-only --quiet` 覆盖旁边 Z
 
 ## 本次验证结果
 
-2026-10-07 Windows/Linux CI 完整通过并正式发布 [v1.1.16](https://github.com/sunkejava/MyUsbIP/releases/tag/v1.1.16)（[发布流水线](https://github.com/sunkejava/MyUsbIP/actions/runs/37556777018)）。Windows NativeAOT 安装器实际输出：
+2026-10-07 Windows/Linux CI 完整通过并正式发布 [v1.1.17](https://github.com/sunkejava/MyUsbIP/releases/tag/v1.1.17)（[发布流水线](https://github.com/sunkejava/MyUsbIP/actions/runs/37558396390)）。Windows NativeAOT 安装器实际输出：
 
 | 资产 | 体积 |
 | --- | ---: |
 | Server / Client 在线 EXE | 5,928,448 bytes（5.65 MiB） |
-| Server 离线 EXE | 44,687,872 bytes（42.62 MiB） |
+| Server 离线 EXE | 44,687,360 bytes（42.62 MiB） |
 | Client 离线 EXE | 63,906,816 bytes（60.95 MiB） |
 
-真实 PE 的管理员权限清单、NativeAOT EXE 参数、本地 ZIP、内置 ZIP、缺包、SHA256 损坏包和 `--verify-only` 均通过验证；下载引擎通过固定 v1.1.15 Release 的真实 HTTPS/CDN 下载、SHA256 及解包集成测试。v1.1.16 的四个安装器、两个 Windows ZIP、Linux ZIP 和 SHA256 文件已成套上传，在线安装器固定的正式下载地址已生效。此处体积会随后续发布的业务程序和驱动包变化。
+真实 PE 的管理员权限清单、NativeAOT EXE 参数、本地 ZIP、内置 ZIP、缺包、SHA256 损坏包和 `--verify-only` 均通过验证；下载引擎通过固定 v1.1.15 Release 的真实 HTTPS/CDN 下载、SHA256 及解包集成测试。v1.1.17 的四个安装器、两个 Windows ZIP、Linux ZIP 和 SHA256 文件已成套上传，在线安装器固定的正式下载地址已生效。此处体积会随后续发布的业务程序和驱动包变化。
+
+v1.1.17 修复 v1.1.16 配置源生成对缺省 `init` 属性覆盖初始化值的回归。旧版 `clientsettings.json` 没有 `UsbipWinPath` 时重新使用 `usbip.exe`，连接超时和接收模式默认值也恢复；Daemon 部分嵌套配置同步修复。安装器继续保留已有配置，无需删除或重写配置文件；Windows/Linux CI 直接验证生产配置类和旧配置运行行为。
