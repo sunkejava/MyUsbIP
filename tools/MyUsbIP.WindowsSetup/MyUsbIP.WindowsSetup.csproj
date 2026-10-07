@@ -2,21 +2,32 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <AssemblyName>MyUsbIP.Setup</AssemblyName>
-    <ApplicationManifest>app.manifest</ApplicationManifest>
-    <PublishSingleFile>true</PublishSingleFile>
-    <SelfContained>true</SelfContained>
-    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <ApplicationManifest Condition="'$(RuntimeIdentifier)' == 'win-x64'">app.manifest</ApplicationManifest>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
+    <PublishAot>true</PublishAot>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IlcOptimizationPreference>Size</IlcOptimizationPreference>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+    <TrimmerSingleWarn>false</TrimmerSingleWarn>
+    <ILLinkTreatWarningsAsErrors>true</ILLinkTreatWarningsAsErrors>
+    <WarningsAsErrors>$(WarningsAsErrors);IL2026;IL3050</WarningsAsErrors>
     <DebugType>None</DebugType>
     <DebugSymbols>false</DebugSymbols>
     <SetupRole Condition="'$(SetupRole)' == ''">all</SetupRole>
+    <SetupMode Condition="'$(SetupMode)' == ''">online</SetupMode>
   </PropertyGroup>
   <ItemGroup>
-    <EmbeddedResource Include="Embedded\dependencies.windows.json" LogicalName="MyUsbIP.Setup.dependencies.windows.json" Condition="Exists('Embedded\dependencies.windows.json')" />
-    <EmbeddedResource Include="Embedded\server-payload.zip" LogicalName="MyUsbIP.Setup.server-payload.zip" Condition="Exists('Embedded\server-payload.zip') And ('$(SetupRole)' == 'server' Or '$(SetupRole)' == 'all')" />
-    <EmbeddedResource Include="Embedded\server-dependency.bin" LogicalName="MyUsbIP.Setup.server-dependency.bin" Condition="Exists('Embedded\server-dependency.bin') And ('$(SetupRole)' == 'server' Or '$(SetupRole)' == 'all')" />
-    <EmbeddedResource Include="Embedded\client-payload.zip" LogicalName="MyUsbIP.Setup.client-payload.zip" Condition="Exists('Embedded\client-payload.zip') And ('$(SetupRole)' == 'client' Or '$(SetupRole)' == 'all')" />
-    <EmbeddedResource Include="Embedded\client-dependency.bin" LogicalName="MyUsbIP.Setup.client-dependency.bin" Condition="Exists('Embedded\client-dependency.bin') And ('$(SetupRole)' == 'client' Or '$(SetupRole)' == 'all')" />
+    <EmbeddedResource Include="Embedded/$(SetupRole)-setup.json" LogicalName="MyUsbIP.Setup.manifest.json" Condition="Exists('Embedded/$(SetupRole)-setup.json')" />
+    <EmbeddedResource Include="Embedded/$(SetupRole)-bundle.zip" LogicalName="MyUsbIP.Setup.bundle.zip" Condition="'$(SetupMode)' == 'offline' And Exists('Embedded/$(SetupRole)-bundle.zip')" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="MyUsbIP.SmokeTests" />
+  </ItemGroup>
+  <Target Name="ValidateSetupPublish" BeforeTargets="PrepareForPublish">
+    <Error Condition="'$(SetupRole)' != 'server' And '$(SetupRole)' != 'client'" Text="Publish requires SetupRole=server or client." />
+    <Error Condition="'$(SetupMode)' != 'online' And '$(SetupMode)' != 'offline'" Text="SetupMode must be online or offline." />
+    <Error Condition="!Exists('Embedded/$(SetupRole)-setup.json')" Text="Run Build-WindowsBundles.ps1 before publishing setup." />
+    <Error Condition="'$(SetupMode)' == 'offline' And !Exists('Embedded/$(SetupRole)-bundle.zip')" Text="Offline setup requires a verified embedded bundle." />
+  </Target>
 </Project>

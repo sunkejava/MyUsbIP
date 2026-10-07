@@ -3,6 +3,10 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>myusbip</AssemblyName>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(MyUsbIpTrimmingAudit)' == 'true'">
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>true</EnableAotAnalyzer>
+  </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/MyUsbIP.Abstractions/MyUsbIP.Abstractions.csproj" />
     <ProjectReference Include="../../src/MyUsbIP.Server/MyUsbIP.Server.csproj" />

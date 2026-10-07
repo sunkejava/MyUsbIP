@@ -16,10 +16,7 @@ if (!File.Exists(configPath))
     return 2;
 }
 
-var config = JsonSerializer.Deserialize<DaemonConfig>(await File.ReadAllTextAsync(configPath), new JsonSerializerOptions
-{
-    PropertyNameCaseInsensitive = true,
-}) ?? new DaemonConfig();
+var config = JsonSerializer.Deserialize(await File.ReadAllTextAsync(configPath), DaemonJsonContext.Default.DaemonConfig) ?? new DaemonConfig();
 
 var configuredDirectory = Environment.ExpandEnvironmentVariables(config.Logging.Directory);
 var logDirectory = Path.IsPathRooted(configuredDirectory)

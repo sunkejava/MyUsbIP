@@ -1,80 +1,109 @@
 using System.Diagnostics;
 using System.Net.Sockets;
+using System.Runtime.Versioning;
 using System.Text.Json;
 using Microsoft.Win32;
 
+if (args.Any(x => x is "--help" or "-h"))
+{
+    SetupOptions.PrintHelp();
+    return 0;
+}
 if (!OperatingSystem.IsWindows())
 {
     Console.Error.WriteLine("MyUsbIP Windows 安装器仅支持 Windows。");
     return 10;
 }
+return await InstallAsync(args);
 
-Console.OutputEncoding = System.Text.Encoding.UTF8;
-var exeName = Path.GetFileNameWithoutExtension(Environment.ProcessPath ?? string.Empty);
-var role = exeName.Contains("Server", StringComparison.OrdinalIgnoreCase) ? "server"
-    : exeName.Contains("Client", StringComparison.OrdinalIgnoreCase) ? "client"
-    : string.Empty;
-
-if (string.IsNullOrEmpty(role))
+[SupportedOSPlatform("windows")]
+static async Task<int> InstallAsync(string[] args)
 {
-    Console.WriteLine("请选择安装类型：1=服务端  2=客户端");
-    role = Console.ReadKey(true).KeyChar == '1' ? "server" : "client";
-}
-
-var baseDir = EmbeddedPayload.PrepareWorkingDirectory(AppContext.BaseDirectory, role);
-var logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "MyUsbIP", "InstallerLogs");
-Directory.CreateDirectory(logDir);
-var logPath = Path.Combine(logDir, $"setup-{role}-{DateTime.Now:yyyyMMdd-HHmmss}.log");
-using var log = new StreamWriter(logPath, append: false, new System.Text.UTF8Encoding(false)) { AutoFlush = true };
-
-void Write(string text)
-{
-    var line = $"[{DateTime.Now:HH:mm:ss}] {text}";
-    Console.WriteLine(line);
-    log.WriteLine(line);
-}
-
-try
-{
-    Write($"MyUsbIP {role} 安装开始");
-    Write($"安装工作目录: {baseDir}");
-
-    var manifestPath = Path.Combine(baseDir, "config", "dependencies.windows.json");
-    if (!File.Exists(manifestPath)) throw new InvalidOperationException($"缺少依赖清单: {manifestPath}");
-    var manifest = JsonSerializer.Deserialize<DependencyManifest>(File.ReadAllText(manifestPath), new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
-        ?? throw new InvalidOperationException("依赖清单解析失败。");
-
-    var package = manifest.Packages.FirstOrDefault(x => x.Enabled && string.Equals(x.Role, role, StringComparison.OrdinalIgnoreCase))
-        ?? throw new InvalidOperationException($"依赖清单中未找到 {role} 依赖。");
-    var dependencyPath = Path.Combine(baseDir, "dependencies", "cache", package.FileName);
-    if (!File.Exists(dependencyPath)) throw new FileNotFoundException("安装包缺少离线驱动依赖。", dependencyPath);
-
-    using (var stream = File.OpenRead(dependencyPath))
+    Console.OutputEncoding = System.Text.Encoding.UTF8;
+    SetupOptions options;
+    try { options = SetupOptions.Parse(args); }
+    catch (ArgumentException ex) { Console.Error.WriteLine(ex.Message); SetupOptions.PrintHelp(); return 2; }
+    var logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "MyUsbIP", "InstallerLogs");
+    Directory.CreateDirectory(logDir);
+    var logPath = Path.Combine(logDir, $"setup-{DateTime.Now:yyyyMMdd-HHmmss}-{Guid.NewGuid():N}.log");
+    using var log = new StreamWriter(logPath, false, new System.Text.UTF8Encoding(false)) { AutoFlush = true };
+    void Write(string text)
     {
-        var actualHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(stream)).ToLowerInvariant();
-        if (string.IsNullOrWhiteSpace(package.Sha256) || !actualHash.Equals(package.Sha256.Trim(), StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException($"驱动依赖 SHA256 校验失败。期望={package.Sha256} 实际={actualHash}");
+        var line = $"[{DateTime.Now:HH:mm:ss}] {text}";
+        Console.WriteLine(line);
+        log.WriteLine(line);
     }
-    Write($"依赖校验通过: {package.FileName}");
-
-    StopExistingRuntime(role, Write);
-
-    if (role == "server") InstallServer(baseDir, dependencyPath, Write);
-    else InstallClient(baseDir, dependencyPath, package, Write);
-
-    Write("安装与内置自检全部完成。");
-    EmbeddedPayload.TryCleanupWorkingDirectory(baseDir, role);
-    Write($"安装日志: {logPath}");
-    Console.WriteLine("\n安装成功。按任意键关闭窗口。");
-    Console.ReadKey(true);
-    return 0;
-}
-catch (Exception ex)
-{
-    Write($"安装失败: {ex}");
-    Console.WriteLine($"\n安装失败，日志已保存：{logPath}\n按任意键关闭窗口。");
-    Console.ReadKey(true);
-    return 1;
+    string? baseDir = null;
+    using var cancellation = new CancellationTokenSource();
+    ConsoleCancelEventHandler cancelHandler = (_, e) => { e.Cancel = true; cancellation.Cancel(); };
+    Console.CancelKeyPress += cancelHandler;
+    try
+    {
+        var setup = EmbeddedPayload.ReadManifest();
+        if (!Environment.Is64BitOperatingSystem || System.Runtime.InteropServices.RuntimeInformation.OSArchitecture != System.Runtime.InteropServices.Architecture.X64)
+            throw new PlatformNotSupportedException("此安装包仅支持 Windows x64。");
+        var role = setup.Role;
+        Write($"MyUsbIP {setup.Version} {role} NativeAOT 安装开始，mode={options.Mode}");
+        baseDir = EmbeddedPayload.CreateWorkingDirectory();
+        await EmbeddedPayload.PrepareAsync(baseDir, AppContext.BaseDirectory, setup, options, Write, cancellation.Token);
+        var manifestPath = Path.Combine(baseDir, "config", "dependencies.windows.json");
+        var manifest = JsonSerializer.Deserialize(File.ReadAllText(manifestPath), SetupJsonContext.Default.DependencyManifest)
+            ?? throw new InvalidDataException("依赖清单解析失败。");
+        var package = manifest.Packages.Single(x => x.Enabled && x.Role.Equals(role, StringComparison.OrdinalIgnoreCase));
+        EmbeddedPayload.ValidateFileName(package.FileName);
+        if (package.InstallType != (role == "server" ? "msi" : "exe") || string.IsNullOrWhiteSpace(package.Version))
+            throw new InvalidDataException("依赖安装类型或版本不匹配。");
+        var dependencyPath = Path.Combine(baseDir, "dependencies", "cache", package.FileName);
+        EmbeddedPayload.VerifyFile(dependencyPath, package.Sha256);
+        var payload = Path.Combine(baseDir, "payload", role);
+        var executable = role == "server" ? "myusbipd.exe" : "myusbip.exe";
+        var config = role == "server" ? "appsettings.json" : "clientsettings.json";
+        if (!File.Exists(Path.Combine(payload, executable)) || !File.Exists(Path.Combine(payload, config)))
+            throw new InvalidDataException("安装包缺少程序或配置文件。");
+        using (JsonDocument.Parse(File.ReadAllText(Path.Combine(payload, config)))) { }
+        Write("驱动、程序和配置文件预检查全部通过。");
+        cancellation.Token.ThrowIfCancellationRequested();
+        if (!options.VerifyOnly)
+        {
+            // 所有下载和校验完成后才停止旧程序，损坏的包不会影响现有服务。
+            using var installationLock = new Mutex(false, @"Global\MyUsbIP.Setup." + role);
+            var acquired = false;
+            try
+            {
+                try { acquired = installationLock.WaitOne(0); }
+                catch (AbandonedMutexException) { acquired = true; }
+                if (!acquired) throw new InvalidOperationException("另一个相同角色的安装器正在安装，请等待它完成。");
+                StopExistingRuntime(role, Write);
+                if (role == "server") InstallServer(baseDir, dependencyPath, Write);
+                else InstallClient(baseDir, dependencyPath, package, Write);
+                Write("安装与内置自检全部完成。");
+            }
+            finally { if (acquired) installationLock.ReleaseMutex(); }
+        }
+        else Write("验证完成，未执行安装。");
+        return 0;
+    }
+    catch (OperationCanceledException)
+    {
+        Write("下载/准备已取消或超时，安装未继续执行。");
+        return 3;
+    }
+    catch (Exception ex)
+    {
+        Write($"安装失败: {ex}");
+        return 1;
+    }
+    finally
+    {
+        Console.CancelKeyPress -= cancelHandler;
+        if (baseDir is not null) EmbeddedPayload.TryCleanupWorkingDirectory(baseDir);
+        Write($"安装日志: {logPath}");
+        if (!options.Quiet && !Console.IsInputRedirected)
+        {
+            Console.WriteLine("按任意键关闭窗口。");
+            Console.ReadKey(true);
+        }
+    }
 }
 
 static void StopExistingRuntime(string role, Action<string> write)
@@ -207,6 +236,7 @@ static void InstallServer(string baseDir, string dependencyPath, Action<string> 
     write($"服务端自检通过：UsbDk 正常，TCP {serverPort} 正常监听。");
 }
 
+[SupportedOSPlatform("windows")]
 static void InstallClient(string baseDir, string dependencyPath, DependencyPackage package, Action<string> write)
 {
     var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
@@ -277,6 +307,7 @@ static void InstallClient(string baseDir, string dependencyPath, DependencyPacka
     write($"客户端自检通过：{versionResult.Output.Trim()}，UDE/VHCI 已响应。");
 }
 
+[SupportedOSPlatform("windows")]
 static void UpdateMachinePath(string addDirectory, string legacyDirectory)
 {
     using var envKey = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\Session Manager\Environment", writable: true)
@@ -395,19 +426,4 @@ static bool WaitPort(int port, TimeSpan timeout)
         Thread.Sleep(500);
     }
     return false;
-}
-
-internal sealed class DependencyManifest
-{
-    public List<DependencyPackage> Packages { get; set; } = [];
-}
-
-internal sealed class DependencyPackage
-{
-    public string Role { get; set; } = string.Empty;
-    public bool Enabled { get; set; }
-    public string Version { get; set; } = string.Empty;
-    public string FileName { get; set; } = string.Empty;
-    public string Sha256 { get; set; } = string.Empty;
-    public string InstallType { get; set; } = string.Empty;
 }

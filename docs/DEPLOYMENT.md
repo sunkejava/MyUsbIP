@@ -1,5 +1,7 @@
 # 部署说明
 
+Windows 推荐使用 [NativeAOT 在线/离线安装器](WINDOWS-SETUP.md)，自动安装 UsbDk（服务端）或 usbip-win2（客户端）。以下 usbipd-win/manual VHCI 描述仅适用于选择旧兼容后端时；默认后端见 README。
+
 ## Windows 服务端
 
 前置条件：

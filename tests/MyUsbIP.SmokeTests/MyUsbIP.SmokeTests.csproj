@@ -3,6 +3,7 @@
     <OutputType>Exe</OutputType>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="../../tools/MyUsbIP.WindowsSetup/MyUsbIP.WindowsSetup.csproj" />
     <ProjectReference Include="../../src/MyUsbIP.Abstractions/MyUsbIP.Abstractions.csproj" />
     <ProjectReference Include="../../src/MyUsbIP.Protocol/MyUsbIP.Protocol.csproj" />
     <ProjectReference Include="../../src/MyUsbIP.Runtime/MyUsbIP.Runtime.csproj" />
