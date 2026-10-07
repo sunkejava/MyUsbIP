@@ -141,7 +141,19 @@ internal static class EmbeddedPayload
             else
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-                entry.ExtractToFile(target, overwrite: false);
+                using var input = entry.Open();
+                using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                var buffer = new byte[81920];
+                long copied = 0;
+                int read;
+                while ((read = input.Read(buffer)) > 0)
+                {
+                    token.ThrowIfCancellationRequested();
+                    copied += read;
+                    if (copied > entry.Length) throw new InvalidDataException("ZIP 实际解压大小超过声明大小。");
+                    output.Write(buffer, 0, read);
+                }
+                if (copied != entry.Length) throw new InvalidDataException("ZIP 文件解压不完整。");
             }
         }
     }

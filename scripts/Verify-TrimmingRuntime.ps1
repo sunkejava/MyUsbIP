@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $hostRidPrefix = if ($IsWindows -or $env:OS -eq 'Windows_NT') { 'win-' } elseif ($IsMacOS) { 'osx-' } else { 'linux-' }
 if (!$RuntimeIdentifier.StartsWith($hostRidPrefix)) { throw 'Smoke requires a runtime matching the current host.' }
-$work = Join-Path $AuditDirectory 'runtime-smoke'
+$work = Join-Path $AuditDirectory ('runtime-smoke/' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 $results = @()
 function Invoke-CliSmoke([string]$Exe, [string]$Config, [string]$Label) {
@@ -53,8 +53,10 @@ foreach ($mode in @('untrimmed', 'trimmed')) {
         }
         if ($logging -and $mode -eq 'trimmed') {
             # 当前已知阻断：任意 object 事件仍依赖反射。若修复，应升级此审计断言。
-            if (!$result.output.Contains('Reflection-based serialization has been disabled')) {
-                throw 'Expected trimming blocker changed; inspect the event serializer and update the audit.'
+            $files = @(Get-ChildItem $logs -Filter '*.jsonl')
+            $lines = @($files | ForEach-Object { Get-Content $_.FullName } | Where-Object { ![string]::IsNullOrWhiteSpace($_) })
+            if ($result.exitCode -ne 2 -or $lines.Count -ne 0) {
+                throw 'Expected trimmed CLI silent event loss changed; inspect and update the audit.'
             }
         }
         $results += $result
@@ -88,7 +90,11 @@ foreach ($mode in @('untrimmed', 'trimmed')) {
         $text = $stdout.GetAwaiter().GetResult() + $stderr.GetAwaiter().GetResult()
         $text | Set-Content (Join-Path $work "daemon-$mode.log") -Encoding utf8
         if ($mode -eq 'trimmed') {
-            if (!$text.Contains('Reflection-based serialization has been disabled')) { throw 'Daemon trimming blocker changed.' }
+            $files = @(Get-ChildItem $logs -Filter '*.jsonl')
+            $lines = @($files | ForEach-Object { Get-Content $_.FullName } | Where-Object { ![string]::IsNullOrWhiteSpace($_) })
+            if (!$text.Contains('Backend: AuditNoDevices') -or $lines.Count -ne 0) {
+                throw 'Expected trimmed Daemon silent event loss changed; inspect and update the audit.'
+            }
         } else {
             $file = Get-ChildItem $logs -Filter '*.jsonl' | Select-Object -First 1
             if (!$file -or !$text.Contains('Backend: AuditNoDevices')) { throw 'Daemon configuration/startup failed.' }
