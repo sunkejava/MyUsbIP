@@ -32,7 +32,7 @@ CLI 的 Linux 裁剪 publish 又在 `EventSinks.cs` 报告 IL2026，证明编译
 | 验证项 | 实测结果 |
 | --- | --- |
 | 现有 `MyUsbIP.SmokeTests` | PASS，覆盖状态协议往返和中文/Win32 异常日志 |
-| 未裁剪 Linux CLI | PASS；大写配置键、非默认超时、中文 receiveMode、事件 arguments 数组与字段一致 |
+| 未裁剪 Linux CLI | PASS；大写配置键、非默认超时、中文 usbIdsPath、事件 arguments 数组与字段一致 |
 | 裁剪 Linux CLI，关闭文件日志 | PASS；配置加载及帮助/无效命令出口正常，退出码 2 |
 | 裁剪 Linux CLI，打开文件日志 | 复现阻断；CLI 仍退出 2，但 JSON Lines 文件为空，事件被静默丢弃 |
 | 未裁剪 Linux Daemon | PASS；大写及嵌套配置加载，`daemon.started` JSON 正确；验证后由审计终止进程 |
@@ -47,8 +47,8 @@ Linux x64、Release、自包含（不是单文件）、.NET 10.0.0 runtime；统
 
 | 项目 | 未裁剪字节 | 裁剪字节 | 未裁剪 MiB | 裁剪 MiB |
 | --- | ---: | ---: | ---: | ---: |
-| CLI | 83,133,844 | 25,839,213 | 79.28 | 24.64 |
-| Daemon | 83,368,511 | 26,033,964 | 79.51 | 24.83 |
+| CLI | 83,133,844 | 25,860,080 | 79.28 | 24.66 |
+| Daemon | 83,368,511 | 26,054,831 | 79.51 | 24.85 |
 
 Windows 体积须以对应平台审计产物为准。本机托管环境禁止 Unix socket，ILLink 的独立 MSBuild task host 创建命名管道失败；为完成 Linux 实测，仅在 `/tmp` 写了 `UsingTask Override=true` 的临时 targets，把两个 linker tasks 改为同进程执行。没有修改仓库 SDK/ILLink 配置，也没有压制 linker 的真实 IL2026；正常 Windows/Linux CI 直接运行审计脚本即可。
 

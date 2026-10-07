@@ -34,14 +34,17 @@ foreach ($mode in @('untrimmed', 'trimmed')) {
     foreach ($logging in @($false, $true)) {
         $label = "$mode-logging-$logging"
         $logs = Join-Path $work "$label-logs"
+        $usbIdsPath = Join-Path $work "中文设备库/usb.ids"
+        New-Item -ItemType Directory -Force -Path (Split-Path $usbIdsPath -Parent) | Out-Null
+        "096e  中文厂商" | Set-Content $usbIdsPath -Encoding utf8
         $config = Join-Path $work "$label.json"
         # 全大写键验证原配置的大小写兼容，覆盖非默认数值、中文、动态数组事件属性。
-        @{ COMMANDTIMEOUTSECONDS = 7; ATTACHTIMEOUTSECONDS = 13; RECEIVEMODE = '中文模式';
+        @{ COMMANDTIMEOUTSECONDS = 7; ATTACHTIMEOUTSECONDS = 13; RECEIVEMODE = 'low-latency'; USBIDSPATH = $usbIdsPath;
             LOGGING = @{ ENABLED = $logging; DIRECTORY = $logs; RETENTIONDAYS = 5 } } |
             ConvertTo-Json -Depth 5 | Set-Content $config -Encoding utf8
         $result = Invoke-CliSmoke $exe $config $label
         if (!$logging -or $mode -eq 'untrimmed') {
-            if ($result.exitCode -ne 2 -or !$result.output.Contains('MyUsbIP CLI')) { throw "Unexpected CLI behavior: $label" }
+            if ($result.exitCode -ne 2 -or !$result.output.Contains('MyUsbIP CLI')) { throw "Unexpected CLI behavior: $label; exit=$($result.exitCode); output=$($result.output)" }
         }
         if ($logging -and $mode -eq 'untrimmed') {
             $file = Get-ChildItem $logs -Filter '*.jsonl' | Select-Object -First 1
@@ -49,7 +52,7 @@ foreach ($mode in @('untrimmed', 'trimmed')) {
             $evt = (Get-Content $file.FullName | Select-Object -First 1) | ConvertFrom-Json
             if ($evt.eventName -ne 'cli.command' -or $evt.properties.arguments[0] -ne 'audit-invalid-command' -or
                 $evt.properties.commandTimeoutSeconds -ne 7 -or $evt.properties.attachTimeoutSeconds -ne 13 -or
-                $evt.properties.receiveMode -ne '中文模式') { throw 'Configuration/event fields changed.' }
+                $evt.properties.receiveMode -ne 'low-latency' -or $evt.properties.usbIdsPath -ne $usbIdsPath) { throw 'Configuration/event fields changed.' }
         }
         if ($logging -and $mode -eq 'trimmed') {
             # 当前已知阻断：任意 object 事件仍依赖反射。若修复，应升级此审计断言。

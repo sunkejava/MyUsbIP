@@ -43,6 +43,8 @@ try {
         if ($Publish -or $Smoke) {
             foreach ($mode in @('untrimmed', 'trimmed')) {
                 $dest = Join-Path $OutputDirectory "$RuntimeIdentifier/$name-$mode"
+                # 只清理本脚本拥有的发行子目录，避免上次失败留下未裁剪 DLL 干扰体积统计。
+                if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
                 $isTrimmed = if ($mode -eq 'trimmed') { 'true' } else { 'false' }
                 Invoke-DotNetAudit @('publish', $project, '-c', 'Release', '-r', $RuntimeIdentifier,
                     '--self-contained', 'true', '-m:1', '-o', $dest, "-p:PublishTrimmed=$isTrimmed",
