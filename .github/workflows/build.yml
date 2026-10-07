@@ -56,7 +56,7 @@ jobs:
         shell: pwsh
         run: |
           $tag = if ('${{ github.ref }}'.StartsWith('refs/tags/')) { '${{ github.ref_name }}' }
-                 elseif ('${{ github.ref }}'.StartsWith('refs/heads/release/')) { '${{ github.ref_name }}'.Substring(8) }
+                 elseif ('${{ github.ref }}'.StartsWith('refs/heads/release/v')) { '${{ github.ref_name }}'.Substring(8) }
                  else { 'v' + (Get-Content VERSION -Raw).Trim() }
           ./scripts/windows/Build-WindowsBundles.ps1 -ReleaseTag $tag -Repository '${{ github.repository }}'
       - name: Publish NativeAOT online and offline Windows setups
