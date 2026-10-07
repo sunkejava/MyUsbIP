@@ -1,6 +1,8 @@
 # Changelog
 
-## 1.1.16 (源码开发版)
+## 1.1.16
+
+2026-10-07 正式发布：[Release v1.1.16](https://github.com/sunkejava/MyUsbIP/releases/tag/v1.1.16)。
 
 - Windows Setup 改为 .NET 10 NativeAOT；新增小型在线 EXE、内置完整载荷的离线 EXE，以及在线 EXE + ZIP 的离线方式。
 - 下载地址固定到 Release，SHA256/大小嵌入 EXE；流式下载、HTTPS 重定向限制、解包边界检查、安装前预验证及唯一临时目录。

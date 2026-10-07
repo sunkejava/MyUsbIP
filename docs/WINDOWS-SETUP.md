@@ -62,7 +62,7 @@ Windows CI 不安装真实驱动，使用 `--verify-only --quiet` 覆盖旁边 Z
 
 ## 本次验证结果
 
-2026-10-07 Windows/Linux CI 完整通过（[验证流水线](https://github.com/sunkejava/MyUsbIP/actions/runs/37554796987)）。Windows NativeAOT 安装器实际输出：
+2026-10-07 Windows/Linux CI 完整通过并正式发布 [v1.1.16](https://github.com/sunkejava/MyUsbIP/releases/tag/v1.1.16)（[发布流水线](https://github.com/sunkejava/MyUsbIP/actions/runs/37556777018)）。Windows NativeAOT 安装器实际输出：
 
 | 资产 | 体积 |
 | --- | ---: |
@@ -70,4 +70,4 @@ Windows CI 不安装真实驱动，使用 `--verify-only --quiet` 覆盖旁边 Z
 | Server 离线 EXE | 44,687,872 bytes（42.62 MiB） |
 | Client 离线 EXE | 63,906,816 bytes（60.95 MiB） |
 
-真实 PE 的管理员权限清单、NativeAOT EXE 参数、本地 ZIP、内置 ZIP、缺包、SHA256 损坏包和 `--verify-only` 均通过验证；下载引擎通过固定 v1.1.15 Release 的真实 HTTPS/CDN 下载、SHA256 及解包集成测试。此处体积会随后续发布的业务程序和驱动包变化。上述 CI 只生成构建产物，没有创建 v1.1.16 Release；正式线上下载地址会在该 Release 成套上传后生效。
+真实 PE 的管理员权限清单、NativeAOT EXE 参数、本地 ZIP、内置 ZIP、缺包、SHA256 损坏包和 `--verify-only` 均通过验证；下载引擎通过固定 v1.1.15 Release 的真实 HTTPS/CDN 下载、SHA256 及解包集成测试。v1.1.16 的四个安装器、两个 Windows ZIP、Linux ZIP 和 SHA256 文件已成套上传，在线安装器固定的正式下载地址已生效。此处体积会随后续发布的业务程序和驱动包变化。
