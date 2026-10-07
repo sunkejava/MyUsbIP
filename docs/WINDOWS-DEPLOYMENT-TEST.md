@@ -369,7 +369,7 @@ Get-NetTCPConnection -State Listen -LocalPort 3240
 MyUsbIP-Client-Setup.exe
 ```
 
-安装器内嵌已固定 SHA256 的 usbip-win2 0.9.8.0 x64 官方安装包，完成安装/复用、PATH 配置和 `usbip -V` / `usbip port` 自检。若驱动安装返回“需要重启”，安装器会停止后续自检并要求先重启。
+在线安装器下载同一 Release 的完整安装包；`MyUsbIP-Client-Offline-Setup.exe` 内嵌已固定 SHA256 的 usbip-win2 0.9.8.0 x64 官方安装包，完成安装/复用、PATH 配置和 `usbip -V` / `usbip port` 自检。若驱动安装返回“需要重启”，安装器会停止后续自检并要求先重启。
 
 ## 7.2 验证驱动
 
@@ -745,12 +745,14 @@ GitHub Actions 构建 MyUsbIP
 ```text
 MyUsbIP-Server-Setup.exe
 MyUsbIP-Client-Setup.exe
+MyUsbIP-Server-Offline-Setup.exe
+MyUsbIP-Client-Offline-Setup.exe
 MyUsbIP-Server-win-x64.zip
 MyUsbIP-Client-win-x64.zip
 myusbip-linux-x64.zip
 checksums.sha256
 ```
 
-Server Setup 只内嵌 Server payload + 固定 UsbDk；Client Setup 只内嵌 Client payload + 固定 usbip-win2。两个备用 ZIP 不再重复包含 Setup EXE，只携带各自角色所需的离线依赖。
+在线 Setup 是小型 NativeAOT EXE，仅内置本次 Release 的角色、下载地址、大小和 SHA256；Offline Setup 内置对应角色的完整 ZIP。两个 ZIP 携带各自程序及离线依赖，也可与在线 EXE 放在一起离线安装。详见 [WINDOWS-SETUP.md](WINDOWS-SETUP.md)。
 
 这样现场部署不依赖 GitHub 网络，也不会发生上游 latest 漂移，同时避免同一份 runtime/驱动在 Release 中被多次嵌套打包。

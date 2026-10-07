@@ -9,10 +9,7 @@ var configPath = Environment.GetEnvironmentVariable("MYUSBIP_CLIENT_CONFIG");
 if (string.IsNullOrWhiteSpace(configPath)) configPath = Path.Combine(AppContext.BaseDirectory, "clientsettings.json");
 
 var config = File.Exists(configPath)
-    ? JsonSerializer.Deserialize<ClientCliConfig>(await File.ReadAllTextAsync(configPath), new JsonSerializerOptions
-    {
-        PropertyNameCaseInsensitive = true,
-    }) ?? new ClientCliConfig()
+    ? JsonSerializer.Deserialize(await File.ReadAllTextAsync(configPath), ClientCliJsonContext.Default.ClientCliConfig) ?? new ClientCliConfig()
     : new ClientCliConfig();
 
 var configuredDirectory = Environment.ExpandEnvironmentVariables(config.Logging.Directory);

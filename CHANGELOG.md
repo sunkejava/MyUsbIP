@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.16 (源码开发版)
+
+- Windows Setup 改为 .NET 10 NativeAOT；新增小型在线 EXE、内置完整载荷的离线 EXE，以及在线 EXE + ZIP 的离线方式。
+- 下载地址固定到 Release，SHA256/大小嵌入 EXE；流式下载、HTTPS 重定向限制、解包边界检查、安装前预验证及唯一临时目录。
+- 保留驱动健康检查、配置保留、部署、计划任务、防火墙、PATH、迁移和自检；新增 quiet、verify-only、总下载超时参数。
+- Windows CI 输出四个 EXE、两个完整 ZIP 及 SHA256，添加不安装驱动的发布验证。
+- CLI/Daemon 增加 trimming 可行性审计；生产发布保持未经 trimming 的 self-contained 单文件。
+
+
 ## 1.1.15
 
 本版本针对 Windows + CH340 (1A86:7523) 实机日志中“首次连接正常、Detach 后再次 Attach 卡住约 120 秒、期间整个 DEVLIST 短暂不可用、随后服务端串口设备消失”的问题进行专项修复。

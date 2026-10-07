@@ -21,6 +21,7 @@ public static class UsbDeviceStatusProtocol
         PropertyNameCaseInsensitive = true,
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
+    private static readonly DeviceStatusJsonContext JsonContext = new(JsonOptions);
 
     public static ValueTask WriteRequestAsync(Stream stream, CancellationToken cancellationToken = default)
         => UsbIpCodec.WriteOperationHeaderAsync(stream,
@@ -33,7 +34,7 @@ public static class UsbDeviceStatusProtocol
             new UsbIpOperationHeader(UsbIpProtocolConstants.Version, OpRepDeviceStatus, 0), cancellationToken)
             .ConfigureAwait(false);
 
-        var payload = JsonSerializer.SerializeToUtf8Bytes(devices, JsonOptions);
+        var payload = JsonSerializer.SerializeToUtf8Bytes(devices, JsonContext.IReadOnlyListUsbIpDeviceInfo);
         if (payload.Length > MaxPayloadLength)
             throw new InvalidDataException("设备状态数据超过安全限制。 ");
 
@@ -60,6 +61,6 @@ public static class UsbDeviceStatusProtocol
 
         var payload = new byte[checked((int)length)];
         await UsbIpCodec.ReadExactlyAsync(stream, payload, cancellationToken).ConfigureAwait(false);
-        return JsonSerializer.Deserialize<List<UsbIpDeviceInfo>>(payload, JsonOptions) ?? [];
+        return JsonSerializer.Deserialize(payload, JsonContext.ListUsbIpDeviceInfo) ?? [];
     }
 }

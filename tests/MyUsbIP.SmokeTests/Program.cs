@@ -7,6 +7,7 @@ using MyUsbIP.Runtime;
 
 var failures = new List<string>();
 
+await SetupSmokeChecks.RunAsync(failures);
 await TestOperationHeaderAsync();
 await TestBusIdAsync();
 await TestDeviceWireMetadataAsync();

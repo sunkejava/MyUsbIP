@@ -2,7 +2,7 @@
 
 基于 **.NET 10 + 标准 USB/IP** 的跨平台 USB 网络共享封装，目标是为 Windows/Linux 提供一套可维护、可诊断、可自动恢复的 VirtualHere 替代方案。
 
-> 当前稳定版本：**v1.1.14**
+> 当前稳定版本：**v1.1.15**；下一版源码：**v1.1.16**
 
 ## Windows 推荐架构
 
@@ -24,7 +24,7 @@ Windows 客户端
 
 ## Windows 最终用户安装
 
-Windows Release 采用 **self-contained + single-file** 发布，目标机器无需预装 .NET 10 Runtime。
+Windows 安装器采用 **NativeAOT + 在线/离线双模式**，目标机器无需预装 .NET Runtime。CLI/Daemon 保持 self-contained 单文件发布。详细说明见 [Windows 安装器](docs/WINDOWS-SETUP.md)。
 
 ### 服务端
 
@@ -56,7 +56,7 @@ C:\ProgramData\MyUsbIP\InstallerLogs
 
 ## 运行时说明
 
-Windows 发布使用 self-contained 单文件模式，因此 `myusbipd.exe`、`myusbip.exe` 和两个 Setup EXE 均不依赖目标机预装 .NET Runtime。v1.1.14 起启用 single-file 压缩，并将 Server/Client Setup 拆为各自只嵌入本角色 payload 与驱动依赖；备用 ZIP 不再重复包含 Setup EXE。
+`myusbipd.exe`、`myusbip.exe` 保持 self-contained 压缩单文件。小型 NativeAOT `*-Setup.exe` 在线下载同一 Release 的完整 ZIP；`*-Offline-Setup.exe` 内置全部离线文件。在线 EXE 与同一 Release 的 ZIP 放在同一目录也可自动离线安装。完整 ZIP 包含对应角色程序及固定驱动，不再重复包含安装器。CLI/Daemon 的 trimming 审计与尚未解决的限制见 [审计报告](docs/TRIMMING-AUDIT.md)。
 
 服务端日志：
 
@@ -126,6 +126,8 @@ TCP 3240 不建议直接暴露公网。生产环境应放在可信局域网、�
 
 ## 文档
 
+- [NativeAOT 在线/离线安装器](docs/WINDOWS-SETUP.md)
+- [CLI/Daemon trimming 审计](docs/TRIMMING-AUDIT.md)
 - `docs/WINDOWS-USBDK-USBIPWIN.md`
 - `docs/WINDOWS-DEPLOYMENT-TEST.md`
 - `docs/ARCHITECTURE.md`
