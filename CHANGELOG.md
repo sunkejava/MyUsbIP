@@ -2,6 +2,8 @@
 
 ## 1.1.18
 
+2026-10-07 正式发布：[Release v1.1.18](https://github.com/sunkejava/MyUsbIP/releases/tag/v1.1.18)。Windows/Linux 构建、34 项 CH340 回归和发布验证全部通过（[流水线](https://github.com/sunkejava/MyUsbIP/actions/runs/37575289403)）。
+
 - 修复 CH340 释放恢复失败后仍记录成功、允许二次捕获的错误；完整 PnP 身份、驱动 DN_STARTED/无问题标志和新鲜 UsbDk 枚举必须连续稳定。
 - 捕获前读取新快照，拒绝缺失、歧义或变化的设备身份；失败缓存不再授权 StartRedirect。
 - 捕获前保存并核验父 Hub 接口、物理端口和驱动键；叶子设备重启/父节点重新枚举仍不能恢复时，只循环已验证的目标端口。当前端口换成其他设备或无法验证时拒绝操作。

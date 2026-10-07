@@ -2,7 +2,9 @@
 
 基于 **.NET 10 + 标准 USB/IP** 的跨平台 USB 网络共享封装，目标是为 Windows/Linux 提供一套可维护、可诊断、可自动恢复的 VirtualHere 替代方案。
 
-> 当前稳定版本：[**v1.1.17**](https://github.com/sunkejava/MyUsbIP/releases/tag/v1.1.17)
+> 当前稳定版本：[**v1.1.18**](https://github.com/sunkejava/MyUsbIP/releases/tag/v1.1.18)
+
+v1.1.18 修复 CH340 恢复失败后使用旧身份再次捕获的问题，并增加经过核验的目标端口恢复。升级与实机复测见 [CH340 二次连接排查](docs/CH340-REATTACH.md)。
 
 ## Windows 推荐架构
 

@@ -44,3 +44,9 @@ Production API edits and smoke runner wiring are complete. Parent performed the 
 | `/tmp/myusbip-dotnet/dotnet tests/MyUsbIP.SmokeTests/bin/Release/net10.0/MyUsbIP.SmokeTests.dll` | Exit 0; all 34 named CH340 cases `[PASS]`; `CH340 recovery checks: PASS (34)` and `MyUsbIP smoke tests: PASS` |
 
 These clean results validate the pure policy and callback regression suite, including cancellation, failed readiness, ambiguous identity and verified port safeguards. Physical CH340 repeat attach validation remains separate.
+
+## Release validation
+
+Release code commit: c0efcee66ed9211557a143eb51974bf40690c915. Main CI run 37575288685 succeeded; release CI run 37575289403 completed all five jobs successfully (Windows/Linux build + smoke + publish, both trimming audits, release). Both platform logs include `CH340 recovery checks: PASS (34)` and `MyUsbIP smoke tests: PASS`. Windows setup verification passed NativeAOT help/options, local and embedded offline packages, missing/corrupted payload rejection.
+
+Published v1.1.18 has exactly eight non-draft, non-prerelease assets. Downloaded all eight and matched byte counts and GitHub SHA256 digests; six Windows package checksums also match checksums.sha256. Parsed both actual online PE embedded manifests: version 1.1.18, fixed download URL, package name, size and SHA256 all bind to the corresponding published Windows ZIP. Extracted Linux CLI from published archive and executed its supported no-argument help path successfully. No physical Windows driver installation or CH340 recovery was performed in automated validation.
