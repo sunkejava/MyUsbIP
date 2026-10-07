@@ -235,20 +235,22 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
         {
             if (sessionStarted && importedBusId is not null)
             {
-                if (activeImports.TryGetValue(importedBusId, out var current) && current.SessionId == sessionId)
-                    activeImports.TryRemove(importedBusId, out _);
-
                 try
                 {
                     await transport.EndSessionAsync(importedBusId, CancellationToken.None).ConfigureAwait(false);
                     await eventSink.WriteAsync(new(DateTimeOffset.Now, "native.session.released", "Information", sessionId,
-                        importedBusId, remote, "USB/IP 会话已释放，设备已重置并保留 UsbDk Redirect",
+                        importedBusId, remote, "USB/IP 会话释放及设备恢复检查已完成",
                         new Dictionary<string, object?> { ["clientAddress"] = remoteAddress }), CancellationToken.None);
                 }
                 catch (Exception ex)
                 {
                     await eventSink.WriteAsync(new(DateTimeOffset.Now, "native.session.release.failed", "Error", sessionId,
                         importedBusId, remote, ex.Message, Exception: ex), CancellationToken.None);
+                }
+                finally
+                {
+                    if (activeImports.TryGetValue(importedBusId, out var current) && current.SessionId == sessionId)
+                        activeImports.TryRemove(importedBusId, out _);
                 }
             }
             client.Dispose();

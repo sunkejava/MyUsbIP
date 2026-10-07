@@ -19,7 +19,8 @@ internal static class WindowsDeviceRecovery
     private const uint CrSuccess = 0;
     private static readonly nint InvalidHandleValue = new(-1);
 
-    public sealed record Identity(string FullInstanceId, string? ParentInstanceId);
+    public sealed record Identity(string FullInstanceId, string? ParentInstanceId,
+        WindowsUsbHubPortRecovery.Topology? HubPort = null);
 
     public static Identity? ResolveIdentity(string? deviceId, string? instanceId)
     {
@@ -30,14 +31,33 @@ internal static class WindowsDeviceRecovery
         if (string.IsNullOrWhiteSpace(fullInstanceId)) return null;
 
         string? parentInstanceId = null;
+        WindowsUsbHubPortRecovery.Topology? hubPort = null;
         if (CM_Locate_DevNodeW(out var devInst, fullInstanceId, 0) == CrSuccess &&
             CM_Get_Parent(out var parentDevInst, devInst, 0) == CrSuccess)
         {
             parentInstanceId = GetDeviceInstanceId(parentDevInst);
+            if (parentInstanceId is not null)
+                hubPort = WindowsUsbHubPortRecovery.Capture(devInst, parentInstanceId);
         }
 
-        return new Identity(fullInstanceId, parentInstanceId);
+        return new Identity(fullInstanceId, parentInstanceId, hubPort);
     }
+
+    internal static bool IsReadyStatus(uint result, uint status, uint problem)
+        => result == CrSuccess && (status & 0x8) != 0 && (status & 0x400) == 0;
+
+    internal static bool IsHostDriverReady(Identity identity, out string detail)
+    {
+        if (!OperatingSystem.IsWindows()) { detail = "不是 Windows"; return false; }
+        var result = CM_Locate_DevNodeW(out var node, identity.FullInstanceId, 0);
+        if (result != CrSuccess) { detail = $"目标 DevNode 不存在，CONFIGRET=0x{result:X8}"; return false; }
+        result = CM_Get_DevNode_Status(out var status, out var problem, node, 0);
+        detail = $"InstanceId={identity.FullInstanceId}, CONFIGRET=0x{result:X8}, Status=0x{status:X8}, Problem={problem}";
+        return IsReadyStatus(result, status, problem);
+    }
+
+    internal static bool TryCycleSavedPort(Identity identity, out string detail)
+        => WindowsUsbHubPortRecovery.TryCycle(identity.HubPort, out detail);
 
     /// <summary>
     /// 首选 DIF_PROPERTYCHANGE/DICS_PROPCHANGE 重启目标设备。
@@ -267,4 +287,7 @@ internal static class WindowsDeviceRecovery
 
     [DllImport("cfgmgr32.dll")]
     private static extern uint CM_Reenumerate_DevNode(uint devInst, uint flags);
+
+    [DllImport("cfgmgr32.dll")]
+    private static extern uint CM_Get_DevNode_Status(out uint status, out uint problem, uint devInst, uint flags);
 }

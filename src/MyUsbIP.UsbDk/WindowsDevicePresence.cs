@@ -66,14 +66,21 @@ internal static class WindowsDevicePresence
     /// DeviceId 例如 USB\VID_1A86&amp;PID_7523，InstanceId 可能仅为端口号 "4"。
     /// </summary>
     public static bool IsPresent(string? deviceId, string? instanceId, IReadOnlyList<string> presentUsbInstanceIds)
-        => FindPresentInstanceId(deviceId, instanceId, presentUsbInstanceIds) is not null;
+        => FindMatchingInstances(deviceId, instanceId, presentUsbInstanceIds).Length > 0;
 
     public static string? FindPresentInstanceId(
         string? deviceId,
         string? instanceId,
         IReadOnlyList<string> presentUsbInstanceIds)
     {
-        if (string.IsNullOrWhiteSpace(deviceId)) return null;
+        var matches = FindMatchingInstances(deviceId, instanceId, presentUsbInstanceIds);
+        // 多个 Hub 上的 CH340 都可能返回短实例 "4"，绝不能选择第一个并重启错误设备。
+        return matches.Length == 1 ? matches[0] : null;
+    }
+
+    private static string[] FindMatchingInstances(string? deviceId, string? instanceId, IReadOnlyList<string> presentUsbInstanceIds)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId)) return [];
 
         var device = deviceId.Trim().TrimEnd('\\');
         var instance = instanceId?.Trim().Trim('\\');
@@ -82,30 +89,24 @@ internal static class WindowsDevicePresence
         var candidates = presentUsbInstanceIds
             .Where(x => string.Equals(x, device, StringComparison.OrdinalIgnoreCase) ||
                         x.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            .ToArray();
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
 
-        if (candidates.Length == 0) return null;
-        if (string.IsNullOrWhiteSpace(instance)) return candidates[0];
+        if (candidates.Length == 0 || string.IsNullOrWhiteSpace(instance)) return candidates;
+        if (instance.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            return candidates.Where(x => string.Equals(x, instance, StringComparison.OrdinalIgnoreCase)).ToArray();
 
         // 有真实序列号的设备：UsbDk InstanceId 往往就是完整实例尾段。
-        foreach (var candidate in candidates)
-        {
-            var tail = candidate.Length > prefix.Length ? candidate[prefix.Length..] : string.Empty;
-            if (string.Equals(tail, instance, StringComparison.OrdinalIgnoreCase)) return candidate;
-        }
+        var exact = candidates.Where(x => x.Length > prefix.Length && string.Equals(x[prefix.Length..], instance, StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (exact.Length > 0) return exact;
 
         // 无序列号的 USB 设备（CH340 很常见）Windows 实例尾段通常形如 6&xxxx&0&4，
         // 而 UsbDk 只给出 "4"。按最后一级端口号匹配，而不是把 "4" 当完整 PnP ID。
         if (uint.TryParse(instance, out _))
         {
-            foreach (var candidate in candidates)
-            {
-                var tail = candidate.Length > prefix.Length ? candidate[prefix.Length..] : string.Empty;
-                if (tail.EndsWith("&" + instance, StringComparison.OrdinalIgnoreCase)) return candidate;
-            }
+            return candidates.Where(x => x.Length > prefix.Length && x[prefix.Length..].EndsWith("&" + instance, StringComparison.OrdinalIgnoreCase)).ToArray();
         }
 
-        return null;
+        return [];
     }
 
     [StructLayout(LayoutKind.Sequential)]

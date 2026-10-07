@@ -8,6 +8,7 @@ using MyUsbIP.Runtime;
 var failures = new List<string>();
 
 ConfigurationSmokeChecks.Run(failures);
+await Ch340RecoverySmokeChecks.RunAsync(failures);
 await SetupSmokeChecks.RunAsync(failures);
 await TestOperationHeaderAsync();
 await TestBusIdAsync();

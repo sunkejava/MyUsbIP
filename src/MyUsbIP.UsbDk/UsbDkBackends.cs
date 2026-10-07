@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Globalization;
-using System.Runtime.InteropServices;
 using MyUsbIP.Abstractions;
 using MyUsbIP.NativeServer;
 using MyUsbIP.Protocol;
@@ -41,7 +40,6 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
 {
     private readonly UsbDkDeviceManager manager;
     private readonly ConcurrentDictionary<string, byte> activeSessions = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, uint> speedCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DescriptorMetadata> descriptorCache = new(StringComparer.OrdinalIgnoreCase);
 
     public UsbDkExportTransport(UsbDkDeviceManager manager)
@@ -51,14 +49,6 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
     {
         var devices = await manager.ListAsync(cancellationToken).ConfigureAwait(false);
         var controlBusy = manager.IsControlPlaneBusy;
-
-        // UsbDk_StartRedirect 可能在内核控制队列等待很久。此时禁止再调用
-        // GetDevicesList/GetConfigurationDescriptor，否则一个 CH340 重连会把所有 DEVLIST/status 一起拖死。
-        if (!controlBusy)
-        {
-            foreach (var pair in ReadNativeSpeeds())
-                speedCache[pair.Key] = pair.Value;
-        }
 
         var result = new List<UsbIpDeviceInfo>(devices.Count);
         foreach (var device in devices)
@@ -75,13 +65,10 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
                     descriptorCache[device.BusId] = descriptor;
             }
 
-            var speed = speedCache.TryGetValue(device.BusId, out var cachedSpeed)
-                ? cachedSpeed
-                : device.Speed;
             result.Add(DecorateWireMetadata(
                 device,
                 activeSessions.ContainsKey(device.BusId),
-                speed,
+                device.Speed,
                 descriptor));
         }
 
@@ -132,19 +119,12 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
         UsbIpDeviceInfo? releasedDevice = null;
         try
         {
-            try
-            {
-                releasedDevice = (await manager.ListAsync(CancellationToken.None).ConfigureAwait(false))
-                    .FirstOrDefault(x => string.Equals(x.BusId, busId, StringComparison.OrdinalIgnoreCase));
-            }
-            catch
-            {
-                // 保存身份仅用于释放后的稳定性等待；读取失败不能阻止真正 StopRedirect。
-            }
+            releasedDevice = manager.GetCapturedDeviceInfo(busId);
 
             await manager.UnshareAsync(busId, CancellationToken.None).ConfigureAwait(false);
 
-            if (releasedDevice is not null)
+            // CH340 的完整 PnP 身份、DN_STARTED 与三次稳定枚举已在门内验证。
+            if (releasedDevice is not null && !(releasedDevice.VendorId == 0x1A86 && releasedDevice.ProductId == 0x7523))
                 await WaitForHostDriverRebindAsync(releasedDevice, CancellationToken.None).ConfigureAwait(false);
         }
         finally
@@ -336,40 +316,4 @@ public sealed class UsbDkExportTransport : IUsbIpExportTransport, IUsbDescriptor
             ConfigurationCount != 0 || InterfaceItems is { Count: > 0 };
     }
 
-    /// <summary>
-    /// UsbDk Speed：1=Low、2=Full、3=High、4=Super；
-    /// USB/IP 在 3 与 5 之间额外保留了 Wireless=4，因此 Super 需要映射为 5。
-    /// </summary>
-    private static Dictionary<string, uint> ReadNativeSpeeds()
-    {
-        var result = new Dictionary<string, uint>(StringComparer.OrdinalIgnoreCase);
-        if (!OperatingSystem.IsWindows()) return result;
-        if (!UsbDkNative.UsbDk_GetDevicesList(out var basePtr, out var count)) return result;
-
-        try
-        {
-            var size = Marshal.SizeOf<UsbDkDeviceInfoNative>();
-            for (uint i = 0; i < count; i++)
-            {
-                var ptr = basePtr + checked((int)i * size);
-                var native = Marshal.PtrToStructure<UsbDkDeviceInfoNative>(ptr);
-                var busId = $"{unchecked((uint)native.FilterId):X8}-{unchecked((uint)native.Port):X8}";
-                result[busId] = native.Speed switch
-                {
-                    1 => 1,
-                    2 => 2,
-                    3 => 3,
-                    4 => 5,
-                    5 => 6,
-                    _ => 0,
-                };
-            }
-        }
-        finally
-        {
-            if (basePtr != 0) UsbDkNative.UsbDk_ReleaseDevicesList(basePtr);
-        }
-
-        return result;
-    }
 }
