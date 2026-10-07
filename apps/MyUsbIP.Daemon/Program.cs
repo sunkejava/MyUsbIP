@@ -219,58 +219,59 @@ static ushort? ParseHex(string? value)
     return Convert.ToUInt16(value, 16);
 }
 
+// 使用 set 让 JSON 源生成只设置实际存在的字段，保留旧配置缺省字段的初始化值。
 internal sealed record DaemonConfig
 {
-    public string BackendMode { get; init; } = "UsbDkUsbipWin";
-    public string UsbipWinPath { get; init; } = "usbip.exe";
-    public int CommandTimeoutSeconds { get; init; } = 15;
-    public int MonitorIntervalSeconds { get; init; } = 2;
-    public DaemonLoggingConfig Logging { get; init; } = new();
-    public NativeServerConfig NativeServer { get; init; } = new();
-    public List<AutoShareRuleConfig> AutoShareRules { get; init; } = [];
-    public List<ManagedConnectionConfig> ManagedConnections { get; init; } = [];
-    public ReconnectConfig Reconnect { get; init; } = new();
+    public string BackendMode { get; set; } = "UsbDkUsbipWin";
+    public string UsbipWinPath { get; set; } = "usbip.exe";
+    public int CommandTimeoutSeconds { get; set; } = 15;
+    public int MonitorIntervalSeconds { get; set; } = 2;
+    public DaemonLoggingConfig Logging { get; set; } = new();
+    public NativeServerConfig NativeServer { get; set; } = new();
+    public List<AutoShareRuleConfig> AutoShareRules { get; set; } = [];
+    public List<ManagedConnectionConfig> ManagedConnections { get; set; } = [];
+    public ReconnectConfig Reconnect { get; set; } = new();
 }
 
 internal sealed record DaemonLoggingConfig
 {
-    public bool Enabled { get; init; } = true;
-    public string Directory { get; init; } = OperatingSystem.IsWindows()
+    public bool Enabled { get; set; } = true;
+    public string Directory { get; set; } = OperatingSystem.IsWindows()
         ? "%ProgramData%\\MyUsbIP\\ServerLogs"
         : "logs";
-    public int RetentionDays { get; init; } = 30;
-    public bool LogSuccessfulUrbs { get; init; }
-    public bool LogDeviceListRequests { get; init; } = true;
+    public int RetentionDays { get; set; } = 30;
+    public bool LogSuccessfulUrbs { get; set; }
+    public bool LogDeviceListRequests { get; set; } = true;
 }
 
 internal sealed record NativeServerConfig
 {
-    public bool Enabled { get; init; } = true;
-    public string ListenAddress { get; init; } = "0.0.0.0";
-    public int Port { get; init; } = 3240;
+    public bool Enabled { get; set; } = true;
+    public string ListenAddress { get; set; } = "0.0.0.0";
+    public int Port { get; set; } = 3240;
 }
 
 internal sealed record AutoShareRuleConfig
 {
-    public string? VendorId { get; init; }
-    public string? ProductId { get; init; }
-    public string? SerialNumber { get; init; }
-    public string? BusIdPrefix { get; init; }
-    public bool Enabled { get; init; } = true;
+    public string? VendorId { get; set; }
+    public string? ProductId { get; set; }
+    public string? SerialNumber { get; set; }
+    public string? BusIdPrefix { get; set; }
+    public bool Enabled { get; set; } = true;
 }
 
 internal sealed record ManagedConnectionConfig
 {
-    public required string Host { get; init; }
-    public required string BusId { get; init; }
-    public int Port { get; init; } = 3240;
-    public bool Enabled { get; init; } = true;
+    public required string Host { get; set; }
+    public required string BusId { get; set; }
+    public int Port { get; set; } = 3240;
+    public bool Enabled { get; set; } = true;
 }
 
 internal sealed record ReconnectConfig
 {
-    public bool Enabled { get; init; } = true;
-    public int CheckIntervalSeconds { get; init; } = 5;
-    public int RetryDelaySeconds { get; init; } = 3;
-    public int MaxConsecutiveFailures { get; init; }
+    public bool Enabled { get; set; } = true;
+    public int CheckIntervalSeconds { get; set; } = 5;
+    public int RetryDelaySeconds { get; set; } = 3;
+    public int MaxConsecutiveFailures { get; set; }
 }

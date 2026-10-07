@@ -2,7 +2,7 @@
 
 基于 **.NET 10 + 标准 USB/IP** 的跨平台 USB 网络共享封装，目标是为 Windows/Linux 提供一套可维护、可诊断、可自动恢复的 VirtualHere 替代方案。
 
-> 当前稳定版本：[**v1.1.16**](https://github.com/sunkejava/MyUsbIP/releases/tag/v1.1.16)
+> 当前稳定版本：[**v1.1.16**](https://github.com/sunkejava/MyUsbIP/releases/tag/v1.1.16)；下一版源码：**v1.1.17**
 
 ## Windows 推荐架构
 

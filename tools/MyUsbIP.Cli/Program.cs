@@ -65,6 +65,7 @@ try
         {
             ["arguments"] = args,
             ["configPath"] = configPath,
+            ["usbipWinPath"] = config.UsbipWinPath,
             ["logPath"] = config.Logging.Enabled ? logPath : null,
             ["commandTimeoutSeconds"] = config.CommandTimeoutSeconds,
             ["attachTimeoutSeconds"] = config.AttachTimeoutSeconds,
@@ -255,21 +256,22 @@ static void PrintHelp()
     Console.WriteLine("  myusbip diag");
 }
 
+// 使用 set 让 JSON 源生成只设置实际存在的字段，保留旧配置缺省字段的初始化值。
 internal sealed record ClientCliConfig
 {
-    public string UsbipWinPath { get; init; } = "usbip.exe";
-    public string UsbIdsPath { get; init; } = string.Empty;
-    public int CommandTimeoutSeconds { get; init; } = 15;
-    public int AttachTimeoutSeconds { get; init; } = 120;
-    public string ReceiveMode { get; init; } = "zero-copy";
-    public ClientLoggingConfig Logging { get; init; } = new();
+    public string UsbipWinPath { get; set; } = "usbip.exe";
+    public string UsbIdsPath { get; set; } = string.Empty;
+    public int CommandTimeoutSeconds { get; set; } = 15;
+    public int AttachTimeoutSeconds { get; set; } = 120;
+    public string ReceiveMode { get; set; } = "zero-copy";
+    public ClientLoggingConfig Logging { get; set; } = new();
 }
 
 internal sealed record ClientLoggingConfig
 {
-    public bool Enabled { get; init; } = true;
-    public string Directory { get; init; } = OperatingSystem.IsWindows()
+    public bool Enabled { get; set; } = true;
+    public string Directory { get; set; } = OperatingSystem.IsWindows()
         ? "%ProgramData%\\MyUsbIP\\ClientLogs"
         : "logs";
-    public int RetentionDays { get; init; } = 30;
+    public int RetentionDays { get; set; } = 30;
 }

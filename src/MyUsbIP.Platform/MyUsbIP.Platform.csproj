@@ -1,5 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
+    <InternalsVisibleTo Include="MyUsbIP.SmokeTests" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../MyUsbIP.Abstractions/MyUsbIP.Abstractions.csproj" />
     <ProjectReference Include="../MyUsbIP.Protocol/MyUsbIP.Protocol.csproj" />
   </ItemGroup>

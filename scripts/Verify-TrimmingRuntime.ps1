@@ -38,8 +38,8 @@ foreach ($mode in @('untrimmed', 'trimmed')) {
         New-Item -ItemType Directory -Force -Path (Split-Path $usbIdsPath -Parent) | Out-Null
         "096e  中文厂商" | Set-Content $usbIdsPath -Encoding utf8
         $config = Join-Path $work "$label.json"
-        # 全大写键验证原配置的大小写兼容，覆盖非默认数值、中文、动态数组事件属性。
-        @{ COMMANDTIMEOUTSECONDS = 7; ATTACHTIMEOUTSECONDS = 13; RECEIVEMODE = 'low-latency'; USBIDSPATH = $usbIdsPath;
+        # 全大写键验证大小写兼容；省略路径/连接超时/接收模式，验证旧配置的默认值。
+        @{ COMMANDTIMEOUTSECONDS = 7; USBIDSPATH = $usbIdsPath;
             LOGGING = @{ ENABLED = $logging; DIRECTORY = $logs; RETENTIONDAYS = 5 } } |
             ConvertTo-Json -Depth 5 | Set-Content $config -Encoding utf8
         $result = Invoke-CliSmoke $exe $config $label
@@ -51,8 +51,9 @@ foreach ($mode in @('untrimmed', 'trimmed')) {
             if (!$file) { throw 'No JSON Lines event produced.' }
             $evt = (Get-Content $file.FullName | Select-Object -First 1) | ConvertFrom-Json
             if ($evt.eventName -ne 'cli.command' -or $evt.properties.arguments[0] -ne 'audit-invalid-command' -or
-                $evt.properties.commandTimeoutSeconds -ne 7 -or $evt.properties.attachTimeoutSeconds -ne 13 -or
-                $evt.properties.receiveMode -ne 'low-latency' -or $evt.properties.usbIdsPath -ne $usbIdsPath) { throw 'Configuration/event fields changed.' }
+                $evt.properties.usbipWinPath -ne 'usbip.exe' -or
+                $evt.properties.commandTimeoutSeconds -ne 7 -or $evt.properties.attachTimeoutSeconds -ne 120 -or
+                $evt.properties.receiveMode -ne 'zero-copy' -or $evt.properties.usbIdsPath -ne $usbIdsPath) { throw 'Configuration/event fields changed.' }
         }
         if ($logging -and $mode -eq 'trimmed') {
             # 当前已知阻断：任意 object 事件仍依赖反射。若修复，应升级此审计断言。

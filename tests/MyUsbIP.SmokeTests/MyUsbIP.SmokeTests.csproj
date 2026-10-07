@@ -3,9 +3,15 @@
     <OutputType>Exe</OutputType>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="../../tools/MyUsbIP.Cli/MyUsbIP.Cli.csproj" />
+    <ProjectReference Include="../../apps/MyUsbIP.Daemon/MyUsbIP.Daemon.csproj" />
+    <ProjectReference Include="../../src/MyUsbIP.Platform/MyUsbIP.Platform.csproj" />
     <ProjectReference Include="../../tools/MyUsbIP.WindowsSetup/MyUsbIP.WindowsSetup.csproj" />
     <ProjectReference Include="../../src/MyUsbIP.Abstractions/MyUsbIP.Abstractions.csproj" />
     <ProjectReference Include="../../src/MyUsbIP.Protocol/MyUsbIP.Protocol.csproj" />
     <ProjectReference Include="../../src/MyUsbIP.Runtime/MyUsbIP.Runtime.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="../../tools/MyUsbIP.Cli/clientsettings.json" Link="fixtures/clientsettings.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

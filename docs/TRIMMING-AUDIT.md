@@ -4,6 +4,8 @@
 
 ## 结论
 
+v1.1.17 补充修复配置源生成的缺省值兼容：CLI/Daemon 配置属性改为 `set`，避免生成器将缺失的 `init` 属性赋为 null/0/false；旧配置无需重写。回归测试直接使用生产配置类及上下文，覆盖缺省/部分嵌套配置、显式 false/0 和大小写兼容；发布运行审计省略 usbip 路径、连接超时、接收模式，核对默认值。该修复不改变下述事件 JSON 的 trimming 阻断结论。
+
 **目前不能把 CLI / Daemon 的正式发行版改为 trimming 或 NativeAOT。** 两者共享的 JSON Lines 事件接收器仍依赖反射发现匿名事件信封及 `IReadOnlyDictionary<string, object?>` 中的任意运行时类型。保留该兼容契约，不压制 IL 警告，不使用 linker 全程序集保留来掩盖问题。
 
 本次已将 CLI 配置、Daemon 配置和设备状态扩展协议改为 `JsonSerializerContext` 源生成；正式 CLI / Daemon 仍沿用普通未裁剪发布。安装器的 NativeAOT 目标独立于此结论。

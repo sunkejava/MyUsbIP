@@ -19,7 +19,7 @@ public sealed class UsbipWinVhciClientBackend : IUsbIpClientBackend
     private readonly string receiveMode;
 
     public UsbipWinVhciClientBackend(
-        string usbipPath = "usbip.exe",
+        string? usbipPath = "usbip.exe",
         IUsbIpEventSink? eventSink = null,
         TimeSpan? commandTimeout = null,
         TimeSpan? attachTimeout = null,
@@ -246,8 +246,10 @@ public sealed class UsbipWinVhciClientBackend : IUsbIpClientBackend
         };
     }
 
-    private static string ResolveUsbipPath(string configuredPath)
+    internal static string ResolveUsbipPath(string? configuredPath)
     {
+        // 兼容旧配置的显式 null/空串；先归一化，避免向 Process.Start 传入空文件名。
+        if (string.IsNullOrWhiteSpace(configuredPath)) configuredPath = "usbip.exe";
         if (!OperatingSystem.IsWindows()) return configuredPath;
         if (Path.IsPathRooted(configuredPath) && File.Exists(configuredPath)) return configuredPath;
 
