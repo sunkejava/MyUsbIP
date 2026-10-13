@@ -301,8 +301,9 @@ public sealed class UsbDkDeviceManager : IDisposable
             if (remaining > 0)
             {
                 await eventSink.WriteAsync(new(DateTimeOffset.Now, "usbdk.release.pending-timeout", "Warning", null,
-                    busId, null, $"StopRedirect 前仍有 {remaining} 个 URB 未完成，继续关闭 Redirect 句柄以终止会话",
+                    busId, null, $"StopRedirect 前仍有 {remaining} 个 URB 未完成，保留 Redirect，拒绝提前释放",
                     new Dictionary<string, object?> { ["pendingCount"] = remaining }), CancellationToken.None);
+                throw new TimeoutException($"设备 {busId} 仍有 {remaining} 个原生 URB 未完成，不能执行 StopRedirect；请等待请求退出后重试释放。");
             }
 
             var device = current;
@@ -483,6 +484,12 @@ public sealed class UsbDkDeviceManager : IDisposable
             if (!pendingTransfers.TryAdd(pendingKey, pending))
                 throw new InvalidDataException($"检测到重复 USB/IP SUBMIT Sequence={request.Sequence}，BusId={busId}。");
 
+            // 会话取消可能发生在服务器 UNLINK 快照之后、原生登记之前。
+            // 登记后注册 Token，已取消的 Token 会立即回调；与启动 I/O 共用锁。
+            // 注册在退出 try 前销毁，保证 OVERLAPPED 释放时取消回调已经结束。
+            using var cancellationRegistration = cancellationToken.Register(
+                () => TryCancelPendingTransfer(device, pending));
+
             UsbDkTransferResult result;
             lock (pending.SyncRoot)
             {
@@ -552,7 +559,8 @@ public sealed class UsbDkDeviceManager : IDisposable
                 pending.Completed = true;
             }
 
-            pendingTransfers.TryRemove(pendingKey, out _);
+            // 重复序号登记失败的请求不能删掉真正的在途请求。
+            pendingTransfers.TryRemove(new KeyValuePair<(string BusId, uint Sequence), PendingTransfer>(pendingKey, pending));
             Marshal.FreeHGlobal(requestPtr);
             Marshal.FreeHGlobal(overlappedPtr);
             UsbDkNative.CloseHandle(eventHandle);

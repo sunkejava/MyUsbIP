@@ -9,6 +9,7 @@ var failures = new List<string>();
 
 ConfigurationSmokeChecks.Run(failures);
 await Ch340RecoverySmokeChecks.RunAsync(failures);
+await SessionLifecycleSmokeChecks.RunAsync(failures);
 await SetupSmokeChecks.RunAsync(failures);
 await TestOperationHeaderAsync();
 await TestBusIdAsync();

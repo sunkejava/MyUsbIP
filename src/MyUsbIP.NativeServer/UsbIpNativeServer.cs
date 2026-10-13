@@ -39,6 +39,9 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
     private readonly List<Task> sessions = [];
     private readonly ConcurrentDictionary<string, ActiveImport> activeImports = new(StringComparer.OrdinalIgnoreCase);
 
+    // 保留到 URB 排空和设备释放完成，旧会话不能与下一次 IMPORT 重叠。
+    private readonly ConcurrentDictionary<string, string> importOwners = new(StringComparer.OrdinalIgnoreCase);
+
     private sealed record ActiveImport(string SessionId, string? ClientAddress, DateTimeOffset ConnectedAt);
 
     public UsbIpNativeServer(IUsbIpExportTransport transport, IPAddress? address = null,
@@ -102,6 +105,7 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
         await using var stream = client.GetStream();
         string? importedBusId = null;
         var sessionStarted = false;
+        var ownsImport = false;
         var remote = client.Client.RemoteEndPoint?.ToString();
         var remoteAddress = (client.Client.RemoteEndPoint as IPEndPoint)?.Address.ToString() ?? remote;
         var sessionId = Guid.NewGuid().ToString("N");
@@ -159,6 +163,15 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
                 {
                     ["clientAddress"] = remoteAddress,
                 }), CancellationToken.None);
+
+            ownsImport = importOwners.TryAdd(importedBusId, sessionId);
+            if (!ownsImport)
+            {
+                await UsbIpWire.WriteImportFailureAsync(stream, 1, cancellationToken).ConfigureAwait(false);
+                await eventSink.WriteAsync(new(DateTimeOffset.Now, "native.import.busy", "Warning", sessionId,
+                    importedBusId, remote, "设备仍被占用或正在清理旧会话，请等待释放完成再连接"), CancellationToken.None);
+                return;
+            }
 
             var device = await transport.FindAsync(importedBusId, cancellationToken).ConfigureAwait(false);
             if (device is null)
@@ -253,6 +266,8 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
                         activeImports.TryRemove(importedBusId, out _);
                 }
             }
+            if (ownsImport && importedBusId is not null)
+                importOwners.TryRemove(new KeyValuePair<string, string>(importedBusId, sessionId));
             client.Dispose();
         }
     }
@@ -262,7 +277,7 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
     {
         using var writeGate = new SemaphoreSlim(1, 1);
         using var sessionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var pending = new ConcurrentDictionary<uint, Task>();
+        var pending = new ConcurrentDictionary<uint, TaskCompletionSource>();
 
         async Task WriteSubmitAsync(UsbIpSubmitCompletion completion)
         {
@@ -323,9 +338,23 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
                         ["requestedLength"] = request.TransferBufferLength,
                     }, ex), CancellationToken.None);
             }
+        }
+
+        async Task RunTrackedSubmitAsync(UsbIpSubmitRequest request, TaskCompletionSource completion)
+        {
+            try
+            {
+                await ProcessSubmitAsync(request).ConfigureAwait(false);
+                completion.TrySetResult();
+            }
+            catch (Exception ex)
+            {
+                completion.TrySetException(ex);
+                sessionCts.Cancel();
+            }
             finally
             {
-                pending.TryRemove(request.Sequence, out _);
+                pending.TryRemove(new KeyValuePair<uint, TaskCompletionSource>(request.Sequence, completion));
             }
         }
 
@@ -340,8 +369,11 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
                     {
                         var request = await UsbIpWire.ReadSubmitAsync(stream, basic.Sequence, basic.DeviceId,
                             basic.Direction, basic.Endpoint, sessionCts.Token).ConfigureAwait(false);
-                        var task = ProcessSubmitAsync(request);
-                        pending[request.Sequence] = task;
+                        // 先登记再执行，兼容同步完成；重复在途序号不能覆盖旧请求。
+                        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                        if (!pending.TryAdd(request.Sequence, completion))
+                            throw new InvalidDataException($"重复在途 SUBMIT Sequence={request.Sequence}。");
+                        _ = RunTrackedSubmitAsync(request, completion);
                         break;
                     }
                     case UsbIpDataCommands.CmdUnlink:
@@ -378,6 +410,8 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
         }
         finally
         {
+            // 先保存任务再取消，防止同步取消回调移除记录后漏等在途任务。
+            var current = pending.Values.Select(x => x.Task).ToArray();
             sessionCts.Cancel();
 
             var sequences = pending.Keys.ToArray();
@@ -386,10 +420,33 @@ public sealed class UsbIpNativeServer : IAsyncDisposable
                 try { await transport.CancelAsync(busId, sequence, CancellationToken.None).ConfigureAwait(false); } catch { }
             }
 
-            var current = pending.Values.ToArray();
             if (current.Length > 0)
             {
-                try { await Task.WhenAll(current).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); } catch { }
+                var drained = Task.WhenAll(current);
+                try
+                {
+                    await drained.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                }
+                catch (TimeoutException)
+                {
+                    // 超时只表示取消迟缓，不代表内核已停止使用请求缓冲区。
+                    // 保留会话占用及同步对象，排空前禁止 EndSession/下一次 IMPORT。
+                    try
+                    {
+                        await eventSink.WriteAsync(new(DateTimeOffset.Now, "native.session.drain.waiting", "Warning",
+                            sessionId, busId, remote, "URB 取消超过 5 秒，继续等待完成；设备仍被隔离，禁止再次连接",
+                            new Dictionary<string, object?> { ["pendingCount"] = current.Count(x => !x.IsCompleted) }),
+                            CancellationToken.None);
+                    }
+                    finally
+                    {
+                        try { await drained.ConfigureAwait(false); } catch { }
+                    }
+                }
+                catch
+                {
+                    // WhenAll 异常返回时所有任务也已结束，可以安全进入设备释放。
+                }
             }
         }
     }

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.19
+
+- 断开时取消并排空旧会话 URB，超过 5 秒只记录等待告警，不提前释放设备或同步对象；同一 BUSID 在设备释放结束前拒绝新的 IMPORT。
+- 修复同步完成请求先移除后登记造成幽灵在途记录的问题；重复在途序号拒绝覆盖。
+- 原生 OVERLAPPED 注册会话取消回调，覆盖取消快照与实际提交之间的竞态；重复登记失败不移除其他请求。
+- UsbDk 原生请求未排空时拒绝 StopRedirect，防止回调使用已释放的重定向资源。
+- 添加真实 TCP 连接回归：同步完成清理、迟缓取消超过 5 秒的重连隔离、排空后重连并复用序号。
+- 自动测试不替代 Windows/CH340 实机验收；内核永不完成取消时保持隔离，服务关闭也会等待该请求。
+
 ## 1.1.18
 
 2026-10-07 正式发布：[Release v1.1.18](https://github.com/sunkejava/MyUsbIP/releases/tag/v1.1.18)。Windows/Linux 构建、34 项 CH340 回归和发布验证全部通过（[流水线](https://github.com/sunkejava/MyUsbIP/actions/runs/37575289403)）。

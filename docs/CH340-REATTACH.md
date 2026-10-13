@@ -34,3 +34,13 @@ DEVLIST 繁忙时读取缓存并做物理存在性检查。原生枚举、描述
 6. 若失败，保留服务端从首次 usbdk.redirect.start 到第二次失败的完整 JSONL，以及客户端对应日志。重点查看 hasVerifiedRecoveryPort、recoveryConnectionIndex、stable、recovery 和完整 PnP 身份；结合设备管理器问题码判断进一步的驱动/Hub 原因。
 
 自动测试覆盖恢复策略、失败传播、取消、唯一身份、PnP 状态与端口保护，没有执行真实 Hub IOCTL 或物理 CH340。Windows/Linux 编译和发布验证不能替代上述实机验收。
+
+## v1.1.19 会话生命周期补充
+
+借鉴本次 VH 静态分析中“请求编号关联确认、端点取消/队列清理”的处理原则，不复用其驱动或私有网络协议。
+
+修复 NativeServer 排空最多等 5 秒后继续释放的错误，以及同步请求在登记前完成导致的幽灵记录。现在断开先取消旧 URB，等待所有提交任务结束后才 EndSession；BUSID 占用一直保持到设备释放结束。超时记录 `native.session.drain.waiting`，并继续等待，新的 IMPORT 返回失败且记录 `native.import.busy`。如果内核永不完成取消，设备会保持隔离，关闭服务也会等待；这避免旧请求串入新会话，但不能替代底层驱动故障恢复。
+
+原生请求在登记后注册 CancellationToken 回调，覆盖服务器取消快照早于实际登记的竞态。UsbDk 单独解除共享时也必须检查原生在途表；未排空则拒绝 StopRedirect，不把取消请求发出当成取消完成。
+
+复测在上述 10 轮连接/断开基础上增加：串口存在挂起 Bulk-IN 时断开，立刻再次 attach；清理期间应明确拒绝，出现 `native.session.released` 后再次 attach 并验证串口收发。保留 `native.session.drain.waiting`、`native.import.busy`、`usbdk.release.pending-timeout` 和对应会话 ID 的日志。该改动未在真实 Windows USB 设备上验证。
